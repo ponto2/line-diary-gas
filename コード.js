@@ -27,7 +27,7 @@ const LINE_USER_ID    = PROPS.getProperty('LINE_USER_ID'); // ★追加: プッ�
 const TAGS  = ["研究", "筋トレ", "勉強", "趣味", "恋愛", "食事", "その他"];
 const MOODS = ["🤩", "😊", "😐", "😰", "😡"];
 // 最新モデル優先リスト
-const MODEL_CANDIDATES = ["gemini-3-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
+const MODEL_CANDIDATES = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
 
 function doPost(e) {
   if (!e?.postData) return ContentService.createTextOutput("error");

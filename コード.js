@@ -24,7 +24,7 @@ const GEMINI_API_KEY  = PROPS.getProperty('GEMINI_API_KEY');
 const DRIVE_FOLDER_ID = PROPS.getProperty('DRIVE_FOLDER_ID');
 const LINE_USER_ID    = PROPS.getProperty('LINE_USER_ID'); // ★追加: プッシュ通知用
 
-const TAGS  = ["研究", "筋トレ", "勉強", "趣味", "恋愛", "食事", "その他"];
+const TAGS  = ["研究", "開発", "健康", "勉強", "レビュー", "資産", "購入", "恋愛", "食事", "写真", "その他"];
 const MOODS = ["🤩", "😊", "😐", "😰", "😡"];
 // 最新モデル優先リスト
 const MODEL_CANDIDATES = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
@@ -187,13 +187,47 @@ function analyzeWithGemini(text, imageBlob) {
 function callGeminiAPI(text, imageBlob, modelName) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${GEMINI_API_KEY}`;
   
-  const promptText = imageBlob 
-    ? `添付画像を分析し、日記のタイトル(20文字以内)を付けてください。入力: ${text}`
-    : `テキストを分析しJSONを返してください。入力: ${text}`;
-    
-  const promptPart = { 
-    text: promptText + `\n\n出力JSON形式: { "title": "...", "mood": "${MOODS.join("/")}", "tags": ["${TAGS.join('","')}"] }` 
-  };
+  // ▼ 更新: 「買い物」→「購入」へ名称変更。経済活動・行動・評価を厳密に定義。
+  const systemPrompt = `
+あなたはユーザーの日記を分析し、メタデータを付与するAIアシスタントです。
+ユーザーの入力（テキストまたは画像）を読み取り、以下の3つの要素を含むJSONオブジェクトのみを出力してください。
+
+1. title: 内容を端的に表すタイトル（20文字以内の日本語）。
+2. mood: 内容から読み取れる気分を [${MOODS.join(", ")}] から1つ選択。
+3. tags: 以下のリストから、内容に合致するタグを選択（複数選択可）。
+
+【タグの定義と使い分け】
+- 研究: 大学での研究活動全般。回路設計、実測、シミュレーション、論文執筆など。
+- 開発: プライベートで行う開発。Bot作成、GAS、プログラミング、アプリ開発など。
+- 健康: 身体と心のメンテナンス。筋トレ、睡眠、体調管理、手術など。
+- 勉強: 知識インプット活動。大学の講義、資格試験、英語学習。
+- レビュー: モノや体験に対する「感想」「評価」。本やライブの感想，製品の感想など。
+- 資産: 金融資産の記録。NISA、仮想通貨、貯金残高、給料、ローン返済など。
+- 購入: 物品の購入ログ。ガジェット、本、服などが「届いた」「買った」という記録。
+- 恋愛: パートナーとの関係、デート、感情の機微。
+- 食事: 食事の内容、自炊、外食、サプリメント摂取。
+- 写真: 画像が送信された場合。
+- その他: 上記のいずれにも当てはまらないもの。
+
+【判定のヒント】
+- 画像がある場合は必ず "写真" タグを含めること。
+- 金融商品（株・仮想通貨）の売買は "資産"。消費財（PC・本・服）の購入は "購入"。
+- 料理の写真の場合は ["食事", "写真"] のように両方を選択すること。
+
+【出力フォーマット (JSON)】
+{
+  "title": "...",
+  "mood": "...",
+  "tags": ["タグ1", "タグ2"]
+}
+`;
+
+  // ユーザーの入力テキスト
+  const userContent = imageBlob 
+    ? `添付画像を分析し、上記ルールに従ってJSONを生成してください。\n補足テキスト: ${text}`
+    : `以下のテキストを分析し、上記ルールに従ってJSONを生成してください。\nテキスト: ${text}`;
+
+  const promptPart = { text: systemPrompt + "\n\n" + userContent };
   
   const parts = [promptPart];
 

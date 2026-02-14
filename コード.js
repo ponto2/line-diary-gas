@@ -17,20 +17,27 @@
 
 const PROPS = PropertiesService.getScriptProperties();
 
-const LINE_TOKEN      = PROPS.getProperty('LINE_TOKEN');
-const NOTION_TOKEN    = PROPS.getProperty('NOTION_TOKEN');
-const NOTION_DB_ID    = PROPS.getProperty('NOTION_DB_ID');
-const GEMINI_API_KEY  = PROPS.getProperty('GEMINI_API_KEY');
+const LINE_TOKEN = PROPS.getProperty('LINE_TOKEN');
+const NOTION_TOKEN = PROPS.getProperty('NOTION_TOKEN');
+const NOTION_DB_ID = PROPS.getProperty('NOTION_DB_ID');
+const GEMINI_API_KEY = PROPS.getProperty('GEMINI_API_KEY');
 const DRIVE_FOLDER_ID = PROPS.getProperty('DRIVE_FOLDER_ID');
-const LINE_USER_ID    = PROPS.getProperty('LINE_USER_ID'); // ★追加: プッシュ通知用
+const LINE_USER_ID = PROPS.getProperty('LINE_USER_ID'); // ★追加: プッシュ通知用
 
-const TAGS  = ["研究", "開発", "健康", "勉強", "レビュー", "資産", "購入", "恋愛", "食事", "写真", "その他"];
+const TAGS = ["研究", "開発", "健康", "勉強", "レビュー", "資産", "購入", "恋愛", "食事", "写真", "その他"];
 const MOODS = ["🤩", "😊", "😐", "😰", "😡"];
 // 最新モデル優先リスト
 const MODEL_CANDIDATES = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
 
 function doPost(e) {
   if (!e?.postData) return ContentService.createTextOutput("error");
+
+  // ★改善4: 必須プロパティのバリデーション
+  const missingKeys = validateRequiredProps();
+  if (missingKeys.length > 0) {
+    console.error(`必須プロパティ未設定: ${missingKeys.join(", ")}`);
+    return ContentService.createTextOutput("config error");
+  }
 
   try {
     const events = JSON.parse(e.postData.contents).events || [];
@@ -47,13 +54,18 @@ function doPost(e) {
         // 1. 画像をDriveに保存
         const imageInfo = saveImageToDrive(msg.id);
         const logText = `📷 写真をアップロードしました\n(${imageInfo.name})`;
-        
+
         // 2. 解析 & Notion保存
         processContent(logText, imageInfo.url, imageInfo.blob);
       }
     });
   } catch (err) {
-    saveToNotion({ title: "❌ システムエラー", mood: "😰", tags: ["その他"] }, err.toString(), null);
+    // ★改善1: 二重障害時の安全対策
+    try {
+      saveToNotion({ title: "❌ システムエラー", mood: "😰", tags: ["その他"] }, err.toString(), null);
+    } catch (notionErr) {
+      console.error("Notion保存も失敗:", notionErr);
+    }
   }
   return ContentService.createTextOutput("ok");
 }
@@ -65,10 +77,10 @@ function doPost(e) {
 function processContent(text, imageUrl, imageBlob) {
   // 画像がある場合は、その内容を加味して解析
   const result = analyzeWithGemini(text, imageBlob);
-  
+
   // Notionの本文には、URLをベタ書きせず、saveToNotionでリンク化する
   // エラー時などに備えてテキストはそのまま渡す
-  
+
   if (result.success) {
     saveToNotion(result.data, text, imageUrl);
   } else {
@@ -87,25 +99,34 @@ function processContent(text, imageUrl, imageBlob) {
 
 function saveImageToDrive(messageId) {
   const url = `https://api-data.line.me/v2/bot/message/${messageId}/content`;
+  // ★改善1: LINE APIのエラーハンドリング追加
   const response = UrlFetchApp.fetch(url, {
     method: 'get',
-    headers: { 'Authorization': `Bearer ${LINE_TOKEN}` }
+    headers: { 'Authorization': `Bearer ${LINE_TOKEN}` },
+    muteHttpExceptions: true
   });
-  const blob = response.getBlob(); 
+  const code = response.getResponseCode();
+  if (code !== 200) {
+    throw new Error(`LINE画像取得エラー (${code}): ${response.getContentText().substring(0, 200)}`);
+  }
+
+  const blob = response.getBlob();
   const date = new Date();
-  const fileName = `Photo_${Utilities.formatDate(date, "JST", "yyyyMMdd_HHmmss")}.jpg`;
-  
+  // ★改善3: タイムゾーンを環境依存しない形式に変更
+  const tz = Session.getScriptTimeZone();
+  const fileName = `Photo_${Utilities.formatDate(date, tz, "yyyyMMdd_HHmmss")}.jpg`;
+
   const folder = DriveApp.getFolderById(DRIVE_FOLDER_ID);
   const file = folder.createFile(blob.setName(fileName));
-  
+
   // ★修正: アプリ起動を回避しやすい「ブラウザ表示用リンク(uc?export=view)」を生成
   // これならChromeで直接画像が表示される確率が高いです
   const viewerUrl = `https://drive.google.com/uc?export=view&id=${file.getId()}`;
 
-  return { 
-    name: fileName, 
+  return {
+    name: fileName,
     url: viewerUrl, // ★修正
-    blob: blob 
+    blob: blob
   };
 }
 
@@ -135,12 +156,12 @@ function saveToNotion(data, bodyText, imageUrl) {
       paragraph: {
         rich_text: [
           { type: 'text', text: { content: "🔗 " } },
-          { 
-            type: 'text', 
-            text: { 
-              content: "写真を開く (Google Drive)", 
+          {
+            type: 'text',
+            text: {
+              content: "写真を開く (Google Drive)",
               link: { url: imageUrl } // ハイパーリンク
-            } 
+            }
           }
         ]
       }
@@ -157,15 +178,21 @@ function saveToNotion(data, bodyText, imageUrl) {
     children: childrenBlocks
   };
 
-  UrlFetchApp.fetch(url, {
+  // ★改善1: Notion API呼び出しにもエラーハンドリングを追加
+  const response = UrlFetchApp.fetch(url, {
     method: 'post',
     headers: {
       'Authorization': `Bearer ${NOTION_TOKEN}`,
       'Content-Type': 'application/json',
       'Notion-Version': '2022-06-28'
     },
-    payload: JSON.stringify(payload)
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
   });
+  const code = response.getResponseCode();
+  if (code !== 200) {
+    throw new Error(`Notion保存エラー (${code}): ${response.getContentText().substring(0, 200)}`);
+  }
 }
 
 // ============================================================
@@ -186,7 +213,7 @@ function analyzeWithGemini(text, imageBlob) {
 
 function callGeminiAPI(text, imageBlob, modelName) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${GEMINI_API_KEY}`;
-  
+
   // ▼ 更新: 「買い物」→「購入」へ名称変更。経済活動・行動・評価を厳密に定義。
   const systemPrompt = `
 あなたはユーザーの日記を分析し、メタデータを付与するAIアシスタントです。
@@ -223,12 +250,12 @@ function callGeminiAPI(text, imageBlob, modelName) {
 `;
 
   // ユーザーの入力テキスト
-  const userContent = imageBlob 
+  const userContent = imageBlob
     ? `添付画像を分析し、上記ルールに従ってJSONを生成してください。\n補足テキスト: ${text}`
     : `以下のテキストを分析し、上記ルールに従ってJSONを生成してください。\nテキスト: ${text}`;
 
   const promptPart = { text: systemPrompt + "\n\n" + userContent };
-  
+
   const parts = [promptPart];
 
   if (imageBlob) {
@@ -250,10 +277,12 @@ function callGeminiAPI(text, imageBlob, modelName) {
   const code = response.getResponseCode();
   const body = response.getContentText();
   if (code !== 200) throw new Error(`API Error (${code}): ${body.substring(0, 200)}`);
-  
-  const match = JSON.parse(body).candidates[0].content.parts[0].text.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error("JSON not found");
-  return JSON.parse(match[0]);
+
+  // ★改善2: オプショナルチェインで安全にパース
+  // ★改善7: response_mime_type指定済みなので正規表現不要、直接JSON.parse
+  const rawText = JSON.parse(body)?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!rawText) throw new Error("Empty response from Gemini");
+  return JSON.parse(rawText);
 }
 
 // ============================================================
@@ -314,7 +343,7 @@ ${userProfile}
   // 1-3. Geminiでレビュー生成 (あなたの指定したモデルリストを使用)
   let reviewText = "";
   let errorLog = "";
-  
+
   for (const model of MODEL_CANDIDATES) {
     try {
       reviewText = callGeminiForText(reviewContext, model);
@@ -340,7 +369,7 @@ function fetchWeeklyLogsFromNotion() {
   date.setDate(date.getDate() - 7);
   const isoDate = date.toISOString();
 
-  const payload = {
+  const basePayload = {
     filter: {
       timestamp: "created_time",
       created_time: { on_or_after: isoDate }
@@ -348,22 +377,43 @@ function fetchWeeklyLogsFromNotion() {
     sorts: [{ timestamp: "created_time", direction: "ascending" }]
   };
 
-  const response = UrlFetchApp.fetch(url, {
-    method: 'post',
-    headers: {
-      'Authorization': `Bearer ${NOTION_TOKEN}`,
-      'Content-Type': 'application/json',
-      'Notion-Version': '2022-06-28'
-    },
-    payload: JSON.stringify(payload)
-  });
+  // ★改善5: ページネーション対応 (100件以上のデータも取得可能に)
+  let allResults = [];
+  let hasMore = true;
+  let nextCursor = undefined;
 
-  const results = JSON.parse(response.getContentText()).results || [];
-  return results.map(page => {
+  while (hasMore) {
+    const payload = { ...basePayload };
+    if (nextCursor) payload.start_cursor = nextCursor;
+
+    const response = UrlFetchApp.fetch(url, {
+      method: 'post',
+      headers: {
+        'Authorization': `Bearer ${NOTION_TOKEN}`,
+        'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28'
+      },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    });
+
+    const code = response.getResponseCode();
+    if (code !== 200) {
+      console.error(`Notionデータ取得エラー (${code}): ${response.getContentText().substring(0, 200)}`);
+      break;
+    }
+
+    const data = JSON.parse(response.getContentText());
+    allResults = allResults.concat(data.results || []);
+    hasMore = data.has_more === true;
+    nextCursor = data.next_cursor;
+  }
+
+  return allResults.map(page => {
     const props = page.properties;
     return {
       date: new Date(page.created_time).toLocaleDateString("ja-JP"),
-      title: props["Name"]?.title[0]?.plain_text || "無題",
+      title: props["Name"]?.title?.[0]?.plain_text || "無題",
       mood: props["Mood"]?.select?.name || "不明"
     };
   });
@@ -387,7 +437,7 @@ function callGeminiForText(prompt, modelName) {
   const code = response.getResponseCode();
   const body = response.getContentText();
   if (code !== 200) throw new Error(`API Error (${code}): ${body.substring(0, 200)}`);
-  
+
   const json = JSON.parse(body);
   return json.candidates?.[0]?.content?.parts?.[0]?.text || "No content";
 }
@@ -396,6 +446,12 @@ function callGeminiForText(prompt, modelName) {
  * 4. LINEプッシュ送信
  */
 function pushLineMessage(text) {
+  // ★改善6: LINEの5000文字制限に対応（超過分は切り詰め）
+  const LINE_TEXT_LIMIT = 5000;
+  const safeText = text.length > LINE_TEXT_LIMIT
+    ? text.substring(0, LINE_TEXT_LIMIT - 20) + "\n\n…（以下省略）"
+    : text;
+
   const url = "https://api.line.me/v2/bot/message/push";
   UrlFetchApp.fetch(url, {
     method: 'post',
@@ -405,7 +461,19 @@ function pushLineMessage(text) {
     },
     payload: JSON.stringify({
       to: LINE_USER_ID,
-      messages: [{ type: 'text', text: text }]
+      messages: [{ type: 'text', text: safeText }]
     })
   });
+}
+
+// ============================================================
+// ユーティリティ
+// ============================================================
+
+/**
+ * ★改善4: 必須スクリプトプロパティのバリデーション
+ */
+function validateRequiredProps() {
+  const required = ['LINE_TOKEN', 'NOTION_TOKEN', 'NOTION_DB_ID', 'GEMINI_API_KEY', 'DRIVE_FOLDER_ID'];
+  return required.filter(key => !PROPS.getProperty(key));
 }

@@ -370,7 +370,7 @@ ${userProfile}
 `;
 
   logs.forEach(log => {
-    reviewContext += `[${log.date}] 気分:${log.mood} タイトル:${log.title}\n`;
+    reviewContext += `---\n[${log.date}] 気分:${log.mood} タグ:${log.tags.join(", ")}\nタイトル: ${log.title}\n本文: ${log.body}\n`;
   });
 
   // 1-3. Geminiでレビュー生成 (あなたの指定したモデルリストを使用)
@@ -444,12 +444,50 @@ function fetchWeeklyLogsFromNotion() {
 
   return allResults.map(page => {
     const props = page.properties;
+    const tags = (props["Tags"]?.multi_select || []).map(t => t.name);
+    const body = fetchPageBodyText(page.id);
     return {
       date: new Date(page.created_time).toLocaleDateString("ja-JP"),
       title: props["Name"]?.title?.[0]?.plain_text || "無題",
-      mood: props["Mood"]?.select?.name || "不明"
+      mood: props["Mood"]?.select?.name || "不明",
+      tags: tags,
+      body: body
     };
   });
+}
+
+/**
+ * 2-b. Notionページの本文テキストを取得
+ */
+function fetchPageBodyText(pageId) {
+  const url = `https://api.notion.com/v1/blocks/${pageId}/children`;
+
+  try {
+    const response = UrlFetchApp.fetch(url, {
+      method: 'get',
+      headers: {
+        'Authorization': `Bearer ${NOTION_TOKEN}`,
+        'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28'
+      },
+      muteHttpExceptions: true
+    });
+
+    if (response.getResponseCode() !== 200) return "(取得失敗)";
+
+    const blocks = JSON.parse(response.getContentText()).results || [];
+    let text = "";
+    for (const block of blocks) {
+      const richTexts = block[block.type]?.rich_text || [];
+      for (const rt of richTexts) {
+        text += rt.plain_text || "";
+      }
+    }
+    return text || "(本文なし)";
+  } catch (e) {
+    console.error(`本文取得エラー (${pageId}):`, e);
+    return "(取得失敗)";
+  }
 }
 
 /**

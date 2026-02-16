@@ -92,7 +92,7 @@ function processContent(text, imageUrl, imageBlob, replyToken) {
     // Notion保存成功をFlex Messageで返信
     if (replyToken) {
       const flexContent = buildDiaryRecordFlex(result.data);
-      replyFlexMessage(replyToken, "✅ 記録しました: " + (result.data.title || "無題"), flexContent);
+      replyFlexMessage(replyToken, "✅ 記録しました: " + (result.data.title || "無題"), flexContent, buildCommandQuickReply());
     }
   } else {
     // 失敗時
@@ -102,7 +102,7 @@ function processContent(text, imageUrl, imageBlob, replyToken) {
       imageUrl
     );
     if (replyToken) {
-      replyLineMessage(replyToken, "⚠️ AI解析に失敗しましたが、原文をNotionに保存しました");
+      replyLineMessage(replyToken, "⚠️ AI解析に失敗しましたが、原文をNotionに保存しました", buildCommandQuickReply());
     }
   }
 }
@@ -539,10 +539,13 @@ function pushLineMessage(text) {
 
 /**
  * 5. LINE返信送信 (Reply API)
+ * @param {Object} [quickReply] - Quick Replyオブジェクト（省略可）
  */
-function replyLineMessage(replyToken, text) {
+function replyLineMessage(replyToken, text, quickReply) {
   const url = "https://api.line.me/v2/bot/message/reply";
   try {
+    const msg = { type: 'text', text: text };
+    if (quickReply) msg.quickReply = quickReply;
     UrlFetchApp.fetch(url, {
       method: 'post',
       headers: {
@@ -551,7 +554,7 @@ function replyLineMessage(replyToken, text) {
       },
       payload: JSON.stringify({
         replyToken: replyToken,
-        messages: [{ type: 'text', text: text }]
+        messages: [msg]
       }),
       muteHttpExceptions: true
     });
@@ -562,10 +565,17 @@ function replyLineMessage(replyToken, text) {
 
 /**
  * 5-b. LINE Flex Message返信
+ * @param {Object} [quickReply] - Quick Replyオブジェクト（省略可）
  */
-function replyFlexMessage(replyToken, altText, flexContents) {
+function replyFlexMessage(replyToken, altText, flexContents, quickReply) {
   const url = "https://api.line.me/v2/bot/message/reply";
   try {
+    const msg = {
+      type: 'flex',
+      altText: altText,
+      contents: flexContents
+    };
+    if (quickReply) msg.quickReply = quickReply;
     UrlFetchApp.fetch(url, {
       method: 'post',
       headers: {
@@ -574,17 +584,35 @@ function replyFlexMessage(replyToken, altText, flexContents) {
       },
       payload: JSON.stringify({
         replyToken: replyToken,
-        messages: [{
-          type: 'flex',
-          altText: altText,
-          contents: flexContents
-        }]
+        messages: [msg]
       }),
       muteHttpExceptions: true
     });
   } catch (e) {
     console.error("LINE Flex返信エラー:", e);
   }
+}
+
+/**
+ * 5-c. コマンド用 Quick Reply ボタンを生成
+ */
+function buildCommandQuickReply() {
+  return {
+    items: [
+      {
+        type: "action",
+        action: { type: "message", label: "📊 統計", text: "/stats" }
+      },
+      {
+        type: "action",
+        action: { type: "message", label: "📅 レビュー", text: "/review" }
+      },
+      {
+        type: "action",
+        action: { type: "message", label: "📖 ヘルプ", text: "/help" }
+      }
+    ]
+  };
 }
 
 // ============================================================
@@ -600,7 +628,7 @@ function handleCommand(text, replyToken) {
 
   switch (cmd) {
     case '/help':
-      replyFlexMessage(replyToken, "コマンド一覧", buildHelpFlex());
+      replyFlexMessage(replyToken, "コマンド一覧", buildHelpFlex(), buildCommandQuickReply());
       break;
 
     case '/stats':
@@ -612,7 +640,7 @@ function handleCommand(text, replyToken) {
       break;
 
     default:
-      replyFlexMessage(replyToken, "不明なコマンドです", buildUnknownCommandFlex(cmd));
+      replyFlexMessage(replyToken, "不明なコマンドです", buildUnknownCommandFlex(cmd), buildCommandQuickReply());
       break;
   }
 }
@@ -624,14 +652,14 @@ function handleStatsCommand(replyToken) {
   try {
     const logs = fetchWeeklyLogsFromNotion();
     if (logs.length === 0) {
-      replyLineMessage(replyToken, "📊 直近7日間の記録がありません。日記を書いてみましょう！");
+      replyLineMessage(replyToken, "📊 直近7日間の記録がありません。日記を書いてみましょう！", buildCommandQuickReply());
       return;
     }
     const flexContent = buildStatsFlex(logs);
-    replyFlexMessage(replyToken, "📊 直近7日間の統計", flexContent);
+    replyFlexMessage(replyToken, "📊 直近7日間の統計", flexContent, buildCommandQuickReply());
   } catch (e) {
     console.error("statsコマンドエラー:", e);
-    replyLineMessage(replyToken, "⚠️ 統計の取得に失敗しました: " + e.message);
+    replyLineMessage(replyToken, "⚠️ 統計の取得に失敗しました: " + e.message, buildCommandQuickReply());
   }
 }
 
@@ -642,7 +670,7 @@ function handleReviewCommand(replyToken) {
   try {
     const logs = fetchWeeklyLogsFromNotion();
     if (logs.length === 0) {
-      replyLineMessage(replyToken, "📝 直近7日間の記録がないため、レビューを生成できません。");
+      replyLineMessage(replyToken, "📝 直近7日間の記録がないため、レビューを生成できません。", buildCommandQuickReply());
       return;
     }
 
@@ -672,14 +700,14 @@ function handleReviewCommand(replyToken) {
       const safeReview = reviewText.length > (LINE_TEXT_LIMIT - header.length - 20)
         ? reviewText.substring(0, LINE_TEXT_LIMIT - header.length - 20) + "\n\n…（以下省略）"
         : reviewText;
-      replyLineMessage(replyToken, header + safeReview);
+      replyLineMessage(replyToken, header + safeReview, buildCommandQuickReply());
       saveLastReview(reviewText);
     } else {
-      replyLineMessage(replyToken, "⚠️ レビュー生成に失敗しました。\n" + errorLog);
+      replyLineMessage(replyToken, "⚠️ レビュー生成に失敗しました。\n" + errorLog, buildCommandQuickReply());
     }
   } catch (e) {
     console.error("reviewコマンドエラー:", e);
-    replyLineMessage(replyToken, "⚠️ レビューの生成に失敗しました: " + e.message);
+    replyLineMessage(replyToken, "⚠️ レビューの生成に失敗しました: " + e.message, buildCommandQuickReply());
   }
 }
 

@@ -91,8 +91,30 @@ function processContent(text, imageUrl, imageBlob, replyToken) {
     saveToNotion(result.data, text, imageUrl);
     // Notion保存成功をFlex Messageで返信
     if (replyToken) {
-      const flexContent = buildDiaryRecordFlex(result.data);
-      replyFlexMessage(replyToken, "✅ 記録しました: " + (result.data.title || "無題"), flexContent, buildCommandQuickReply());
+      try {
+        const flexContent = buildDiaryRecordFlex(result.data);
+        replyFlexMessage(replyToken, "✅ 記録しました: " + (result.data.title || "無題"), flexContent, buildCommandQuickReply());
+      } catch (e) {
+        console.error("Flex reply failed, attempting push fallback:", e);
+        try {
+          // Fallback 1: Push Flex Message (if reply token expired but payload is valid)
+          const flexContent = buildDiaryRecordFlex(result.data);
+          pushFlexMessage("✅ 記録しました: " + (result.data.title || "無題"), flexContent, buildCommandQuickReply());
+        } catch (pushErr) {
+          console.error("Flex push failed, attempting text push:", pushErr);
+
+          // Debug: Log the failing Flex Content to Notion
+          try {
+            const debugPayload = JSON.stringify(buildDiaryRecordFlex(result.data), null, 2);
+            saveToNotion({ title: "❌ Flex Debug Payload", mood: "🐛", tags: ["debug"] }, debugPayload + "\n\nError: " + pushErr.message, null);
+          } catch (e) {
+            console.error("Failed to log debug payload", e);
+          }
+
+          // Fallback 2: Push Text Message (if payload is invalid)
+          pushLineMessage(`✅ 記録しました (Flex Error)\n\n${result.data.title || "無題"}\n\nエラー: ${pushErr.message}\n(詳細なJSONデータはNotionに保存しました)`);
+        }
+      }
     }
   } else {
     // 失敗時
@@ -544,7 +566,7 @@ function pushLineMessage(text) {
  */
 function pushMessages(messages) {
   const url = "https://api.line.me/v2/bot/message/push";
-  UrlFetchApp.fetch(url, {
+  const response = UrlFetchApp.fetch(url, {
     method: 'post',
     headers: {
       'Authorization': `Bearer ${LINE_TOKEN}`,
@@ -553,8 +575,26 @@ function pushMessages(messages) {
     payload: JSON.stringify({
       to: LINE_USER_ID,
       messages: messages
-    })
+    }),
+    muteHttpExceptions: true
   });
+
+  if (response.getResponseCode() !== 200) {
+    throw new Error(`LINE Push Error: ${response.getContentText()}`);
+  }
+}
+
+/**
+ * 4-c. LINE Flex Messageプッシュ送信
+ */
+function pushFlexMessage(altText, flexContents, quickReply) {
+  const msg = {
+    type: 'flex',
+    altText: altText,
+    contents: flexContents
+  };
+  if (quickReply) msg.quickReply = quickReply;
+  pushMessages([msg]);
 }
 
 /**
@@ -563,23 +603,24 @@ function pushMessages(messages) {
  */
 function replyLineMessage(replyToken, text, quickReply) {
   const url = "https://api.line.me/v2/bot/message/reply";
-  try {
-    const msg = { type: 'text', text: text };
-    if (quickReply) msg.quickReply = quickReply;
-    UrlFetchApp.fetch(url, {
-      method: 'post',
-      headers: {
-        'Authorization': `Bearer ${LINE_TOKEN}`,
-        'Content-Type': 'application/json'
-      },
-      payload: JSON.stringify({
-        replyToken: replyToken,
-        messages: [msg]
-      }),
-      muteHttpExceptions: true
-    });
-  } catch (e) {
-    console.error("LINE返信エラー:", e);
+  const msg = { type: 'text', text: text };
+  if (quickReply) msg.quickReply = quickReply;
+
+  const response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    headers: {
+      'Authorization': `Bearer ${LINE_TOKEN}`,
+      'Content-Type': 'application/json'
+    },
+    payload: JSON.stringify({
+      replyToken: replyToken,
+      messages: [msg]
+    }),
+    muteHttpExceptions: true
+  });
+
+  if (response.getResponseCode() !== 200) {
+    throw new Error(`LINE Reply Error: ${response.getContentText()}`);
   }
 }
 
@@ -589,27 +630,28 @@ function replyLineMessage(replyToken, text, quickReply) {
  */
 function replyFlexMessage(replyToken, altText, flexContents, quickReply) {
   const url = "https://api.line.me/v2/bot/message/reply";
-  try {
-    const msg = {
-      type: 'flex',
-      altText: altText,
-      contents: flexContents
-    };
-    if (quickReply) msg.quickReply = quickReply;
-    UrlFetchApp.fetch(url, {
-      method: 'post',
-      headers: {
-        'Authorization': `Bearer ${LINE_TOKEN}`,
-        'Content-Type': 'application/json'
-      },
-      payload: JSON.stringify({
-        replyToken: replyToken,
-        messages: [msg]
-      }),
-      muteHttpExceptions: true
-    });
-  } catch (e) {
-    console.error("LINE Flex返信エラー:", e);
+  const msg = {
+    type: 'flex',
+    altText: altText,
+    contents: flexContents
+  };
+  if (quickReply) msg.quickReply = quickReply;
+
+  const response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    headers: {
+      'Authorization': `Bearer ${LINE_TOKEN}`,
+      'Content-Type': 'application/json'
+    },
+    payload: JSON.stringify({
+      replyToken: replyToken,
+      messages: [msg]
+    }),
+    muteHttpExceptions: true
+  });
+
+  if (response.getResponseCode() !== 200) {
+    throw new Error(`LINE API Response Error: ${response.getContentText()}`);
   }
 }
 
@@ -878,8 +920,9 @@ function buildDiaryRecordFlex(data) {
   const mood = data.mood || "😐";
   const tags = data.tags || [];
 
-  // タグをピル型ラベルに
-  const tagComponents = tags.map(tag => ({
+  // タグをピル型ラベルに (空文字除外)
+  const validTags = tags.filter(t => t && String(t).trim() !== "");
+  const tagComponents = validTags.map(tag => ({
     type: "box",
     layout: "vertical",
     contents: [{ type: "text", text: tag, size: "xs", color: "#FFFFFF", align: "center" }],
@@ -934,7 +977,6 @@ function buildDiaryRecordFlex(data) {
               layout: "horizontal",
               spacing: "sm",
               flex: 1,
-              flexWrap: "wrap",
               contents: tagComponents.length > 0 ? tagComponents : [{ type: "text", text: "タグなし", size: "xs", color: "#999999" }]
             }
           ]
@@ -1163,7 +1205,7 @@ function buildStatsFlex(logs) {
       type: "box",
       layout: "vertical",
       contents: [
-        { type: "text", text: dateRange + " の統計", color: "#FFFFFF", size: "sm", weight: "bold" }
+        { type: "text", text: "📊 " + dateRange + " の統計", color: "#FFFFFF", size: "sm", weight: "bold" }
       ]
     },
     body: {
@@ -1242,7 +1284,7 @@ function buildHelpFlex() {
     { cmd: "/stats", desc: "直近7日間の統計を表示" },
     { cmd: "/streak", desc: "連続記録日数を表示" },
     { cmd: "/review", desc: "週次レビューを生成" },
-    { cmd: "/help", desc: "このヘルプを表示" }
+    { cmd: "/help", desc: "ヘルプを表示" }
   ];
 
   const cmdComponents = commands.map(c => ({
@@ -1268,6 +1310,7 @@ function buildHelpFlex() {
 
   return {
     type: "bubble",
+    size: "kilo",
     styles: {
       header: { backgroundColor: "#1B5E20" }
     },

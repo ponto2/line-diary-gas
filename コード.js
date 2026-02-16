@@ -721,7 +721,6 @@ function handleReviewCommand(replyToken) {
         ? reviewText.substring(0, LINE_TEXT_LIMIT - header.length - 20) + "\n\n…（以下省略）"
         : reviewText;
       replyLineMessage(replyToken, header + safeReview, buildCommandQuickReply());
-      saveLastReview(reviewText);
     } else {
       replyLineMessage(replyToken, "⚠️ レビュー生成に失敗しました。\n" + errorLog, buildCommandQuickReply());
     }

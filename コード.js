@@ -621,8 +621,7 @@ function buildCommandQuickReply() {
     { type: "action", action: { type: "message", label: "📝 今日", text: "/today" } },
     { type: "action", action: { type: "message", label: "📊 統計", text: "/stats" } },
     { type: "action", action: { type: "message", label: "🔥 連続", text: "/streak" } },
-    { type: "action", action: { type: "message", label: "📅 レビュー", text: "/review" } },
-    { type: "action", action: { type: "message", label: "📖 ヘルプ", text: "/help" } }
+    { type: "action", action: { type: "message", label: "📅 レビュー", text: "/review" } }
   ];
   return { items: items };
 }

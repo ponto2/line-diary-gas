@@ -1,4 +1,4 @@
-/**
+﻿/**
  * ============================================================
  * LINE → Gemini (Security First) → Google Drive → Notion
  * ============================================================
@@ -1099,8 +1099,20 @@ function buildStatsFlex(logs) {
       type: "box",
       layout: "horizontal",
       contents: [
-        { type: "text", text: mood, size: "lg", flex: 1 },
-        { type: "text", text: `${count}回`, size: "sm", color: "#666666", flex: 2, align: "start" }
+        { type: "filler", flex: 1 },
+        { type: "text", text: mood, size: "md", flex: 2, align: "center", gravity: "center" },
+        {
+          type: "box",
+          layout: "horizontal",
+          flex: 2,
+          justifyContent: "center",
+          alignItems: "center",
+          contents: [
+            { type: "text", text: String(count), size: "sm", color: "#666666", flex: 0 },
+            { type: "text", text: "回", size: "sm", color: "#666666", flex: 0, margin: "xs" }
+          ]
+        },
+        { type: "filler", flex: 1 }
       ]
     }));
 
@@ -1114,16 +1126,36 @@ function buildStatsFlex(logs) {
       type: "box",
       layout: "horizontal",
       contents: [
-        { type: "text", text: tag, size: "sm", flex: 2 },
-        { type: "text", text: `${count}回`, size: "sm", color: "#666666", flex: 1, align: "end" }
+        { type: "filler", flex: 1 },
+        { type: "text", text: tag, size: "sm", flex: 2, align: "center", gravity: "center" },
+        {
+          type: "box",
+          layout: "horizontal",
+          flex: 2,
+          justifyContent: "center",
+          alignItems: "center",
+          contents: [
+            { type: "text", text: String(count), size: "sm", color: "#666666", flex: 0 },
+            { type: "text", text: "回", size: "sm", color: "#666666", flex: 0, margin: "xs" }
+          ]
+        },
+        { type: "filler", flex: 1 }
       ]
     }));
 
   // 記録がある日数
   const uniqueDays = new Set(logs.map(log => log.date)).size;
 
+  // 日付範囲を計算
+  var dayNames = ['日', '月', '火', '水', '木', '金', '土'];
+  var now = new Date();
+  var from = new Date();
+  from.setDate(from.getDate() - 6);
+  var dateRange = (from.getMonth() + 1) + "/" + from.getDate() + "(" + dayNames[from.getDay()] + ") ~ " + (now.getMonth() + 1) + "/" + now.getDate() + "(" + dayNames[now.getDay()] + ")";
+
   return {
     type: "bubble",
+    size: "kilo",
     styles: {
       header: { backgroundColor: "#0D47A1" }
     },
@@ -1131,13 +1163,13 @@ function buildStatsFlex(logs) {
       type: "box",
       layout: "vertical",
       contents: [
-        { type: "text", text: "📊 直近7日間の統計", color: "#FFFFFF", size: "md", weight: "bold" }
+        { type: "text", text: dateRange + " の統計", color: "#FFFFFF", size: "sm", weight: "bold" }
       ]
     },
     body: {
       type: "box",
       layout: "vertical",
-      spacing: "lg",
+      spacing: "md",
       contents: [
         // 記録数サマリー
         {
@@ -1165,25 +1197,35 @@ function buildStatsFlex(logs) {
           ]
         },
         { type: "separator" },
-        // ムード分布
+        // ムード分布 & タグ頻度 横並び
         {
           type: "box",
-          layout: "vertical",
-          spacing: "sm",
+          layout: "horizontal",
+          spacing: "md",
           contents: [
-            { type: "text", text: "ムード分布", size: "sm", weight: "bold", color: "#333333" },
-            ...moodItems
-          ]
-        },
-        { type: "separator" },
-        // タグ頻度 TOP5
-        {
-          type: "box",
-          layout: "vertical",
-          spacing: "sm",
-          contents: [
-            { type: "text", text: "タグ頻度 TOP5", size: "sm", weight: "bold", color: "#333333" },
-            ...tagItems
+            {
+              type: "box",
+              layout: "vertical",
+              spacing: "xs",
+              flex: 1,
+              alignItems: "center",
+              contents: [
+                { type: "text", text: "ムード", size: "xs", weight: "bold", color: "#333333" },
+                ...moodItems
+              ]
+            },
+            { type: "separator" },
+            {
+              type: "box",
+              layout: "vertical",
+              spacing: "xs",
+              flex: 1,
+              alignItems: "center",
+              contents: [
+                { type: "text", text: "タグ TOP5", size: "xs", weight: "bold", color: "#333333" },
+                ...tagItems
+              ]
+            }
           ]
         }
       ]

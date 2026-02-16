@@ -251,6 +251,8 @@ function callGeminiAPI(text, imageBlob, modelName) {
 - 😡: 非常にネガティブ。怒り、強い不満、激しいストレス
 - 感情が明示されていない場合は 😐 を選択すること
 - 複数の感情が混在する場合は、全体のトーンから最も近いものを選ぶこと
+- 【画像入力の場合】写真を撮って送信している行為自体がポジティブな意図を持つため、基本的に 🤩 か 😊 を選択すること
+- 【画像入力の場合】特に、ラーメン・焼肉・寿司などのボリューミーな食べ物や豪華な食事の写真は 🤩 を割り当てること
 
 【タグの定義と使い分け】
 - 研究: 大学での研究活動全般。回路設計、実測、シミュレーション、論文執筆など。
@@ -384,8 +386,20 @@ function sendWeeklyReview() {
   }
 
   if (reviewText) {
-    pushLineMessage("📅 【週次レビュー】\n\n" + reviewText);
-    // 次回のために今回のレビューを保存
+    // レビューテキスト + 統計カードを同時送信
+    const LINE_TEXT_LIMIT = 5000;
+    const header = "📅 【週次レビュー】\n\n";
+    const safeReview = reviewText.length > (LINE_TEXT_LIMIT - header.length - 20)
+      ? reviewText.substring(0, LINE_TEXT_LIMIT - header.length - 20) + "\n\n…（以下省略）"
+      : reviewText;
+
+    const statsMsg = { type: 'flex', altText: '📊 今週の統計', contents: buildStatsFlex(logs) };
+    statsMsg.quickReply = buildCommandQuickReply();
+    const messages = [
+      { type: 'text', text: header + safeReview },
+      statsMsg
+    ];
+    pushMessages(messages);
     saveLastReview(reviewText);
   } else {
     pushLineMessage("週次レビューの生成に失敗しました。\n" + errorLog);
@@ -514,15 +528,21 @@ function callGeminiForText(prompt, modelName) {
 }
 
 /**
- * 4. LINEプッシュ送信
+ * 4. LINEプッシュ送信（テキスト）
  */
 function pushLineMessage(text) {
-  // ★改善6: LINEの5000文字制限に対応（超過分は切り詰め）
   const LINE_TEXT_LIMIT = 5000;
   const safeText = text.length > LINE_TEXT_LIMIT
     ? text.substring(0, LINE_TEXT_LIMIT - 20) + "\n\n…（以下省略）"
     : text;
+  const msg = { type: 'text', text: safeText, quickReply: buildCommandQuickReply() };
+  pushMessages([msg]);
+}
 
+/**
+ * 4-b. LINEプッシュ送信（複数メッセージ対応）
+ */
+function pushMessages(messages) {
   const url = "https://api.line.me/v2/bot/message/push";
   UrlFetchApp.fetch(url, {
     method: 'post',
@@ -532,7 +552,7 @@ function pushLineMessage(text) {
     },
     payload: JSON.stringify({
       to: LINE_USER_ID,
-      messages: [{ type: 'text', text: safeText }]
+      messages: messages
     })
   });
 }
@@ -723,7 +743,7 @@ function buildDiaryRecordFlex(data) {
   const mood = data.mood || "😐";
   const tags = data.tags || [];
 
-  // タグをラベル風に並べる
+  // タグをピル型ラベルに
   const tagComponents = tags.map(tag => ({
     type: "box",
     layout: "vertical",
@@ -737,6 +757,7 @@ function buildDiaryRecordFlex(data) {
 
   return {
     type: "bubble",
+    size: "kilo",
     styles: {
       header: { backgroundColor: "#1B5E20" }
     },
@@ -753,13 +774,35 @@ function buildDiaryRecordFlex(data) {
       spacing: "md",
       contents: [
         { type: "text", text: title, weight: "bold", size: "lg", wrap: true },
-        { type: "text", text: mood, size: "3xl", align: "center", margin: "md" },
         {
           type: "box",
           layout: "horizontal",
-          spacing: "sm",
-          contents: tagComponents.length > 0 ? tagComponents : [{ type: "text", text: "タグなし", size: "xs", color: "#999999" }],
-          margin: "md"
+          spacing: "md",
+          alignItems: "center",
+          contents: [
+            {
+              type: "box",
+              layout: "vertical",
+              contents: [
+                { type: "text", text: mood, size: "xl", align: "center", gravity: "center" }
+              ],
+              backgroundColor: "#E8F5E9",
+              cornerRadius: "xxl",
+              width: "44px",
+              height: "44px",
+              justifyContent: "center",
+              alignItems: "center",
+              flex: 0
+            },
+            {
+              type: "box",
+              layout: "horizontal",
+              spacing: "sm",
+              flex: 1,
+              flexWrap: "wrap",
+              contents: tagComponents.length > 0 ? tagComponents : [{ type: "text", text: "タグなし", size: "xs", color: "#999999" }]
+            }
+          ]
         }
       ]
     }
@@ -921,10 +964,7 @@ function buildHelpFlex() {
       layout: "vertical",
       spacing: "md",
       contents: [
-        { type: "text", text: "以下のコマンドが使えます", size: "sm", color: "#999999" },
-        ...cmdComponents,
-        { type: "separator", margin: "lg" },
-        { type: "text", text: "💡 通常のテキストはそのまま日記として記録されます", size: "xs", color: "#999999", wrap: true, margin: "md" }
+        ...cmdComponents
       ]
     }
   };

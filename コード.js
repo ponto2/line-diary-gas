@@ -372,6 +372,25 @@ function callGeminiAPI(text, imageBlob, modelName) {
 // ============================================================
 
 /**
+ * 0. デイリーリマインダー (トリガー実行)
+ * 夜に日記が未記録の場合に通知
+ */
+function sendDailyReminder() {
+  if (!LINE_USER_ID) return;
+
+  try {
+    const logs = fetchTodayLogsFromNotion();
+    if (logs.length === 0) {
+      pushLineMessage("こんばんは！🌙\n今日はまだ日記が記録されていないようです。\n\n一日の終わりに、今日の出来事や気持ちを少しだけ残してみませんか？✍️");
+    } else {
+      console.log("本日は既に日記が記録されています。");
+    }
+  } catch (e) {
+    console.error("Reminder Error:", e);
+  }
+}
+
+/**
  * 1. 週次レビューのエントリーポイント (トリガー実行)
  */
 function sendWeeklyReview() {
@@ -488,6 +507,52 @@ function fetchWeeklyLogsFromNotion() {
       mood: props["Mood"]?.select?.name || "不明",
       tags: tags,
       body: body
+    };
+  });
+}
+
+/**
+ * 2-c. 今日のログを取得 (Notion)
+ */
+function fetchTodayLogsFromNotion() {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const isoDate = today.toISOString();
+
+  const url = `https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`;
+  const response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    headers: {
+      'Authorization': `Bearer ${NOTION_TOKEN}`,
+      'Content-Type': 'application/json',
+      'Notion-Version': '2022-06-28'
+    },
+    payload: JSON.stringify({
+      filter: {
+        timestamp: "created_time",
+        created_time: { on_or_after: isoDate }
+      },
+      sorts: [{ timestamp: "created_time", direction: "ascending" }]
+    }),
+    muteHttpExceptions: true
+  });
+
+  if (response.getResponseCode() !== 200) {
+    throw new Error(`Notionデータ取得エラー: ${response.getContentText()}`);
+  }
+
+  const data = JSON.parse(response.getContentText());
+  const results = data.results || [];
+
+  return results.map(page => {
+    const props = page.properties;
+    const tags = (props["Tags"]?.multi_select || []).map(t => t.name);
+    const time = new Date(page.created_time);
+    return {
+      time: `${time.getHours()}:${String(time.getMinutes()).padStart(2, '0')}`,
+      title: props["Name"]?.title?.[0]?.plain_text || "無題",
+      mood: props["Mood"]?.select?.name || "😐",
+      tags: tags
     };
   });
 }
@@ -776,53 +841,12 @@ function handleReviewCommand(replyToken) {
  */
 function handleTodayCommand(replyToken) {
   try {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const isoDate = today.toISOString();
+    const logs = fetchTodayLogsFromNotion();
 
-    // 今日のログだけ取得（fetchWeeklyLogsFromNotionと同じ構造、日付だけ変更）
-    const url = `https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`;
-    const response = UrlFetchApp.fetch(url, {
-      method: 'post',
-      headers: {
-        'Authorization': `Bearer ${NOTION_TOKEN}`,
-        'Content-Type': 'application/json',
-        'Notion-Version': '2022-06-28'
-      },
-      payload: JSON.stringify({
-        filter: {
-          timestamp: "created_time",
-          created_time: { on_or_after: isoDate }
-        },
-        sorts: [{ timestamp: "created_time", direction: "ascending" }]
-      }),
-      muteHttpExceptions: true
-    });
-
-    if (response.getResponseCode() !== 200) {
-      replyLineMessage(replyToken, "⚠️ データの取得に失敗しました", buildCommandQuickReply());
-      return;
-    }
-
-    const data = JSON.parse(response.getContentText());
-    const results = data.results || [];
-
-    if (results.length === 0) {
+    if (logs.length === 0) {
       replyLineMessage(replyToken, "📝 今日はまだ記録がありません。日記を書いてみましょう！", buildCommandQuickReply());
       return;
     }
-
-    const logs = results.map(page => {
-      const props = page.properties;
-      const tags = (props["Tags"]?.multi_select || []).map(t => t.name);
-      const time = new Date(page.created_time);
-      return {
-        time: `${time.getHours()}:${String(time.getMinutes()).padStart(2, '0')}`,
-        title: props["Name"]?.title?.[0]?.plain_text || "無題",
-        mood: props["Mood"]?.select?.name || "😐",
-        tags: tags
-      };
-    });
 
     const flexContent = buildTodayFlex(logs);
     replyFlexMessage(replyToken, `📝 今日の記録 (${logs.length}件)`, flexContent, buildCommandQuickReply());

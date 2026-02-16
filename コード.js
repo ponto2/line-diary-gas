@@ -617,22 +617,14 @@ function replyFlexMessage(replyToken, altText, flexContents, quickReply) {
  * 5-c. コマンド用 Quick Reply ボタンを生成
  */
 function buildCommandQuickReply() {
-  return {
-    items: [
-      {
-        type: "action",
-        action: { type: "message", label: "📊 統計", text: "/stats" }
-      },
-      {
-        type: "action",
-        action: { type: "message", label: "📅 レビュー", text: "/review" }
-      },
-      {
-        type: "action",
-        action: { type: "message", label: "📖 ヘルプ", text: "/help" }
-      }
-    ]
-  };
+  var items = [
+    { type: "action", action: { type: "message", label: "📝 今日", text: "/today" } },
+    { type: "action", action: { type: "message", label: "📊 統計", text: "/stats" } },
+    { type: "action", action: { type: "message", label: "🔥 連続", text: "/streak" } },
+    { type: "action", action: { type: "message", label: "📅 レビュー", text: "/review" } },
+    { type: "action", action: { type: "message", label: "📖 ヘルプ", text: "/help" } }
+  ];
+  return { items: items };
 }
 
 // ============================================================
@@ -657,6 +649,14 @@ function handleCommand(text, replyToken) {
 
     case '/review':
       handleReviewCommand(replyToken);
+      break;
+
+    case '/today':
+      handleTodayCommand(replyToken);
+      break;
+
+    case '/streak':
+      handleStreakCommand(replyToken);
       break;
 
     default:
@@ -730,6 +730,143 @@ function handleReviewCommand(replyToken) {
   }
 }
 
+/**
+ * /today コマンド: 今日の記録一覧を表示
+ */
+function handleTodayCommand(replyToken) {
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const isoDate = today.toISOString();
+
+    // 今日のログだけ取得（fetchWeeklyLogsFromNotionと同じ構造、日付だけ変更）
+    const url = `https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`;
+    const response = UrlFetchApp.fetch(url, {
+      method: 'post',
+      headers: {
+        'Authorization': `Bearer ${NOTION_TOKEN}`,
+        'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28'
+      },
+      payload: JSON.stringify({
+        filter: {
+          timestamp: "created_time",
+          created_time: { on_or_after: isoDate }
+        },
+        sorts: [{ timestamp: "created_time", direction: "ascending" }]
+      }),
+      muteHttpExceptions: true
+    });
+
+    if (response.getResponseCode() !== 200) {
+      replyLineMessage(replyToken, "⚠️ データの取得に失敗しました", buildCommandQuickReply());
+      return;
+    }
+
+    const data = JSON.parse(response.getContentText());
+    const results = data.results || [];
+
+    if (results.length === 0) {
+      replyLineMessage(replyToken, "📝 今日はまだ記録がありません。日記を書いてみましょう！", buildCommandQuickReply());
+      return;
+    }
+
+    const logs = results.map(page => {
+      const props = page.properties;
+      const tags = (props["Tags"]?.multi_select || []).map(t => t.name);
+      const time = new Date(page.created_time);
+      return {
+        time: `${time.getHours()}:${String(time.getMinutes()).padStart(2, '0')}`,
+        title: props["Name"]?.title?.[0]?.plain_text || "無題",
+        mood: props["Mood"]?.select?.name || "😐",
+        tags: tags
+      };
+    });
+
+    const flexContent = buildTodayFlex(logs);
+    replyFlexMessage(replyToken, `📝 今日の記録 (${logs.length}件)`, flexContent, buildCommandQuickReply());
+  } catch (e) {
+    console.error("todayコマンドエラー:", e);
+    replyLineMessage(replyToken, "⚠️ 今日の記録の取得に失敗しました: " + e.message, buildCommandQuickReply());
+  }
+}
+
+/**
+ * /streak コマンド: 連続記録日数を表示
+ */
+function handleStreakCommand(replyToken) {
+  try {
+    // 過去30日分のログを取得して連続日数を計算
+    const url = `https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`;
+    const since = new Date();
+    since.setHours(0, 0, 0, 0);
+    since.setDate(since.getDate() - 30);
+
+    const response = UrlFetchApp.fetch(url, {
+      method: 'post',
+      headers: {
+        'Authorization': `Bearer ${NOTION_TOKEN}`,
+        'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28'
+      },
+      payload: JSON.stringify({
+        filter: {
+          timestamp: "created_time",
+          created_time: { on_or_after: since.toISOString() }
+        },
+        sorts: [{ timestamp: "created_time", direction: "descending" }]
+      }),
+      muteHttpExceptions: true
+    });
+
+    if (response.getResponseCode() !== 200) {
+      replyLineMessage(replyToken, "⚠️ データの取得に失敗しました", buildCommandQuickReply());
+      return;
+    }
+
+    const data = JSON.parse(response.getContentText());
+    const results = data.results || [];
+
+    // 記録がある日のSetを作成（YYYY-MM-DD形式）
+    const recordedDates = new Set();
+    results.forEach(page => {
+      const d = new Date(page.created_time);
+      recordedDates.add(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+    });
+
+    // 今日から遡って連続日数を計算
+    let streak = 0;
+    const check = new Date();
+    check.setHours(0, 0, 0, 0);
+
+    // 今日の記録がなければストリーク0
+    const todayKey = `${check.getFullYear()}-${String(check.getMonth() + 1).padStart(2, '0')}-${String(check.getDate()).padStart(2, '0')}`;
+    if (!recordedDates.has(todayKey)) {
+      // 今日まだ記録していない場合、昨日まででカウント
+      check.setDate(check.getDate() - 1);
+    }
+
+    for (let i = 0; i < 31; i++) {
+      const key = `${check.getFullYear()}-${String(check.getMonth() + 1).padStart(2, '0')}-${String(check.getDate()).padStart(2, '0')}`;
+      if (recordedDates.has(key)) {
+        streak++;
+        check.setDate(check.getDate() - 1);
+      } else {
+        break;
+      }
+    }
+
+    const totalDays = recordedDates.size;
+    const hasTodayRecord = recordedDates.has(todayKey);
+
+    const flexContent = buildStreakFlex(streak, totalDays, hasTodayRecord);
+    replyFlexMessage(replyToken, `🔥 連続${streak}日`, flexContent, buildCommandQuickReply());
+  } catch (e) {
+    console.error("streakコマンドエラー:", e);
+    replyLineMessage(replyToken, "⚠️ 連続記録の取得に失敗しました: " + e.message, buildCommandQuickReply());
+  }
+}
+
 // ============================================================
 // Flex Message ビルダー
 // ============================================================
@@ -800,6 +937,146 @@ function buildDiaryRecordFlex(data) {
               flex: 1,
               flexWrap: "wrap",
               contents: tagComponents.length > 0 ? tagComponents : [{ type: "text", text: "タグなし", size: "xs", color: "#999999" }]
+            }
+          ]
+        }
+      ]
+    }
+  };
+}
+
+/**
+ * /today 今日の記録一覧のFlex Message
+ */
+function buildTodayFlex(logs) {
+  const today = new Date();
+  const dayNames = ['日', '月', '火', '水', '木', '金', '土'];
+  const dateStr = (today.getMonth() + 1) + '/' + today.getDate() + '(' + dayNames[today.getDay()] + ')';
+
+  const logItems = logs.map(function (log) {
+    var tagText = log.tags.length > 0 ? log.tags.join(', ') : '';
+    var subText = [log.mood, tagText].filter(Boolean).join('  ');
+    return {
+      type: "box",
+      layout: "vertical",
+      spacing: "xs",
+      contents: [
+        {
+          type: "box",
+          layout: "horizontal",
+          spacing: "sm",
+          contents: [
+            { type: "text", text: log.time, size: "xs", color: "#999999", flex: 0 },
+            { type: "text", text: log.title, size: "sm", weight: "bold", wrap: true, flex: 1 }
+          ]
+        },
+        { type: "text", text: subText, size: "xs", color: "#666666", margin: "xs" }
+      ]
+    };
+  });
+
+  var bodyContents = [];
+  logItems.forEach(function (item, i) {
+    bodyContents.push(item);
+    if (i < logItems.length - 1) {
+      bodyContents.push({ type: "separator", margin: "md" });
+    }
+  });
+
+  return {
+    type: "bubble",
+    size: "kilo",
+    styles: {
+      header: { backgroundColor: "#1B5E20" }
+    },
+    header: {
+      type: "box",
+      layout: "horizontal",
+      contents: [
+        { type: "text", text: dateStr + " の記録", color: "#FFFFFF", size: "sm", weight: "bold", flex: 1 },
+        { type: "text", text: logs.length + "件", color: "#E8F5E9", size: "sm", align: "end", flex: 0 }
+      ]
+    },
+    body: {
+      type: "box",
+      layout: "vertical",
+      spacing: "md",
+      contents: bodyContents
+    }
+  };
+}
+
+/**
+ * /streak 連続記録のFlex Message
+ */
+function buildStreakFlex(streak, totalDays, hasTodayRecord) {
+  var emoji, message;
+  if (streak === 0) {
+    emoji = "✍";
+    message = "今日から始めましょう！";
+  } else if (streak < 3) {
+    emoji = "🌱";
+    message = "良いスタートです！";
+  } else if (streak < 7) {
+    emoji = "🔥";
+    message = "絶好調！その調子！";
+  } else if (streak < 14) {
+    emoji = "⭐";
+    message = "素晴らしい習慣です！";
+  } else if (streak < 30) {
+    emoji = "💎";
+    message = "規律的な記録が定着しています！";
+  } else {
+    emoji = "🏆";
+    message = "伝説級の継続力！";
+  }
+
+  var todayStatus = hasTodayRecord ? "記録済み ✅" : "まだ ⏳";
+
+  return {
+    type: "bubble",
+    size: "kilo",
+    styles: {
+      header: { backgroundColor: "#E65100" }
+    },
+    header: {
+      type: "box",
+      layout: "vertical",
+      contents: [
+        { type: "text", text: emoji + " 連続記録", color: "#FFFFFF", size: "sm", weight: "bold" }
+      ]
+    },
+    body: {
+      type: "box",
+      layout: "vertical",
+      spacing: "lg",
+      alignItems: "center",
+      contents: [
+        { type: "text", text: streak + "日", size: "3xl", weight: "bold", align: "center", color: "#E65100" },
+        { type: "text", text: message, size: "sm", align: "center", color: "#666666" },
+        { type: "separator" },
+        {
+          type: "box",
+          layout: "horizontal",
+          spacing: "lg",
+          contents: [
+            {
+              type: "box",
+              layout: "vertical",
+              contents: [
+                { type: "text", text: "過去30日", size: "xs", color: "#999999", align: "center" },
+                { type: "text", text: totalDays + "日", size: "md", weight: "bold", align: "center" }
+              ],
+              flex: 1
+            },
+            {
+              type: "box",
+              layout: "vertical",
+              contents: [
+                { type: "text", text: "今日", size: "xs", color: "#999999", align: "center" },
+                { type: "text", text: todayStatus, size: "sm", weight: "bold", align: "center", wrap: true }
+              ],
+              flex: 1
             }
           ]
         }
@@ -920,9 +1197,11 @@ function buildStatsFlex(logs) {
  */
 function buildHelpFlex() {
   const commands = [
-    { cmd: "/help", desc: "このヘルプを表示" },
+    { cmd: "/today", desc: "今日の記録一覧を表示" },
     { cmd: "/stats", desc: "直近7日間の統計を表示" },
-    { cmd: "/review", desc: "週次レビューをその場で生成" }
+    { cmd: "/streak", desc: "連続記録日数を表示" },
+    { cmd: "/review", desc: "週次レビューを生成" },
+    { cmd: "/help", desc: "このヘルプを表示" }
   ];
 
   const cmdComponents = commands.map(c => ({
@@ -1008,7 +1287,9 @@ function buildWeeklyReviewPrompt(userProfile, lastReview, stats, logs) {
   let prompt = `あなたはユーザーの成長を見守る「パーソナル心理メンター」です。
 以下の心理学フレームワークに基づき、表面的な要約ではなく、ユーザーの行動パターンや心理的欲求に踏み込んだ週次レビューを作成してください。
 
-【👤 ユーザー情報】
+【👤 ユーザー情報（内部参照用）】
+※この情報はログの行動パターンを正しく解釈するための背景知識として使用すること。
+※出力でプロフィール内容に直接言及しないこと（「理系のあなたは〜」「研究者として〜」のような表現は禁止）。
 ${userProfile}
 
 【🧠 分析に使う心理学フレームワーク（内部参照用・出力には含めないこと）】

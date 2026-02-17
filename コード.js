@@ -726,9 +726,11 @@ function replyFlexMessage(replyToken, altText, flexContents, quickReply) {
 function buildCommandQuickReply() {
   var items = [
     { type: "action", action: { type: "message", label: "📝 今日", text: "/today" } },
-    { type: "action", action: { type: "message", label: "📊 統計", text: "/stats" } },
     { type: "action", action: { type: "message", label: "🔥 連続", text: "/streak" } },
-    { type: "action", action: { type: "message", label: "📅 レビュー", text: "/review" } }
+    { type: "action", action: { type: "message", label: "📊 統計", text: "/stats" } },
+    { type: "action", action: { type: "message", label: "🎲 ガチャ", text: "/random" } },
+    { type: "action", action: { type: "message", label: "📅 レビュー", text: "/review" } },
+    { type: "action", action: { type: "message", label: "📅 1年前", text: "/onthisday" } }
   ];
   return { items: items };
 }
@@ -767,6 +769,14 @@ function handleCommand(text, replyToken) {
 
     case '/monthly':
       handleMonthlyCommand(replyToken);
+      break;
+
+    case '/onthisday':
+      handleOnThisDayCommand(replyToken);
+      break;
+
+    case '/random':
+      handleRandomCommand(replyToken);
       break;
 
     default:
@@ -1379,6 +1389,8 @@ function buildHelpFlex() {
     { cmd: "/streak", desc: "連続記録日数を表示" },
     { cmd: "/review", desc: "週次レビューを生成" },
     { cmd: "/monthly", desc: "月次レビューを生成" },
+    { cmd: "/onthisday", desc: "過去の今日の記録を表示" },
+    { cmd: "/random", desc: "ランダムに日記を表示" },
     { cmd: "/help", desc: "ヘルプを表示" }
   ];
 
@@ -2193,4 +2205,351 @@ function buildLogStatistics(logs) {
     .join(", ");
 
   return `記録数: ${totalEntries}件\nムード分布: ${moodSummary}\nタグ頻度: ${tagSummary}\n記録曜日: ${daySummary}`;
+}
+
+// ============================================================
+// ▼ 以下拡張機能: 過去振り返り機能 (/onthisday, /random)
+// ============================================================
+
+/**
+ * /onthisday コマンド: 過去の今日の日記を表示
+ */
+function handleOnThisDayCommand(replyToken) {
+  try {
+    const today = new Date();
+    const month = today.getMonth();
+    const date = today.getDate();
+
+    // 過去5年分を検索
+    let messages = [];
+
+    // 1年前〜5年前
+    for (let i = 1; i <= 5; i++) {
+      const targetYear = today.getFullYear() - i;
+      const targetDate = new Date(targetYear, month, date);
+      const logs = fetchLogsByDate(targetDate);
+
+      if (logs.length > 0) {
+        logs.forEach(log => {
+          const label = `${i}年前の今日`;
+          // Flex Messageを作成
+          const flexContents = buildPastLogFlex(log, label);
+          messages.push({
+            type: "flex",
+            altText: `📅 ${label} の記録`,
+            contents: flexContents
+          });
+        });
+      }
+    }
+
+    if (messages.length === 0) {
+      replyLineMessage(replyToken, "📅 過去の同じ日の記録は見つかりませんでした。", buildCommandQuickReply());
+    } else {
+      // 最大5通までしか送れないため制限
+      if (messages.length > 5) {
+        messages = messages.slice(0, 5);
+      }
+
+      // QuickReplyを最後のメッセージに付与
+      messages[messages.length - 1].quickReply = buildCommandQuickReply();
+
+      // 複数メッセージ送信用の専用関数が必要だが、replyLineMessage等では単発しか送れないため
+      // ここで汎用のreplyMessages関数を呼ぶ（下で定義）
+      replyMessages(replyToken, messages);
+    }
+  } catch (e) {
+    console.error("onthisday command error:", e);
+    replyLineMessage(replyToken, "⚠️ エラーが発生しました: " + e.message, buildCommandQuickReply());
+  }
+}
+
+/**
+ * /random コマンド: ランダムな過去の日記を表示
+ */
+function handleRandomCommand(replyToken) {
+  try {
+    // 全期間からランダムに1件取得
+    // ※ランダム日付生成だと記録がない日にヒットする確率が高いため、
+    //   一度全件の日付リスト（ID含む）を取得してからランダムに選択する方式に変更
+    const allLogs = fetchAllLogDates();
+
+    if (allLogs.length === 0) {
+      replyLineMessage(replyToken, "🎲 記録が1件もありません。まずは日記を書いてみましょう！", buildCommandQuickReply());
+      return;
+    }
+
+    // ランダムに1件選択
+    const randomLogMeta = allLogs[Math.floor(Math.random() * allLogs.length)];
+
+    // 選択されたログの詳細（本文含む）を取得
+    // ※fetchAllLogDatesはメタデータのみのため、詳細取得が必要
+    const details = fetchLogDetails(randomLogMeta.id);
+    if (!details) {
+      replyLineMessage(replyToken, "🎲 日記ガチャ失敗… 記録が見つかりませんでした。", buildCommandQuickReply());
+      return;
+    }
+
+    const dateStr = details.date; // 既にフォーマット済み
+    const label = `🎲 ${dateStr} の記録`;
+
+    replyFlexMessage(replyToken, label, buildPastLogFlex(details, "🎲 日記ガチャ"), buildCommandQuickReply());
+
+  } catch (e) {
+    console.error("random command error:", e);
+    replyLineMessage(replyToken, "⚠️ エラーが発生しました: " + e.message, buildCommandQuickReply());
+  }
+}
+
+/**
+ * 全期間のログの日付とIDを取得（軽量版）
+ * @returns {Array<{id: string, date: string}>}
+ */
+function fetchAllLogDates() {
+  const url = `https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`;
+  let allResults = [];
+  let hasMore = true;
+  let nextCursor = undefined;
+
+  // 全件取得（IDと作成日時のみ必要なため、プロパティフィルタはかけないが、
+  // ペイロードを軽く制限したかったがNotion APIはプロパティ指定取得不可。
+  // 全プロパティが返ってくるが仕方ない）
+
+  while (hasMore) {
+    const payload = {
+      sorts: [{ timestamp: "created_time", direction: "descending" }],
+      page_size: 100 // 最大取得数
+    };
+    if (nextCursor) payload.start_cursor = nextCursor;
+
+    const response = UrlFetchApp.fetch(url, {
+      method: 'post',
+      headers: {
+        'Authorization': `Bearer ${NOTION_TOKEN}`,
+        'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28'
+      },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    });
+
+    if (response.getResponseCode() !== 200) break;
+
+    const data = JSON.parse(response.getContentText());
+    if (data.results) {
+      data.results.forEach(page => {
+        allResults.push({
+          id: page.id,
+          date: new Date(page.created_time).toLocaleDateString("ja-JP")
+        });
+      });
+    }
+    hasMore = data.has_more;
+    nextCursor = data.next_cursor;
+  }
+
+  return allResults;
+}
+
+/**
+ * 指定IDのログ詳細を取得
+ */
+function fetchLogDetails(pageId) {
+  const url = `https://api.notion.com/v1/pages/${pageId}`;
+  const response = UrlFetchApp.fetch(url, {
+    method: 'get',
+    headers: {
+      'Authorization': `Bearer ${NOTION_TOKEN}`,
+      'Notion-Version': '2022-06-28'
+    },
+    muteHttpExceptions: true
+  });
+
+  if (response.getResponseCode() !== 200) return null;
+
+  const page = JSON.parse(response.getContentText());
+  const props = page.properties;
+  const tags = (props["Tags"]?.multi_select || []).map(t => t.name);
+  const body = fetchPageBodyText(page.id); // 本文も取得
+  const d = new Date(page.created_time);
+
+  return {
+    date: d.toLocaleDateString("ja-JP"),
+    time: `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`,
+    title: props["Name"]?.title?.[0]?.plain_text || "無題",
+    mood: props["Mood"]?.select?.name || "😐",
+    tags: tags,
+    body: body
+  };
+}
+
+
+/**
+ * 指定した日付（1日分）のログを取得
+ * @param {Date} targetDate
+ * @returns {Array} ログ配列
+ */
+function fetchLogsByDate(targetDate) {
+  const start = new Date(targetDate);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(targetDate);
+  end.setHours(23, 59, 59, 999);
+
+  const url = `https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`;
+  const payload = {
+    filter: {
+      and: [
+        { timestamp: "created_time", created_time: { on_or_after: start.toISOString() } },
+        { timestamp: "created_time", created_time: { on_or_before: end.toISOString() } }
+      ]
+    }
+  };
+
+  // エラーハンドリングは呼び出し元で行う前提
+  const response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    headers: {
+      'Authorization': `Bearer ${NOTION_TOKEN}`,
+      'Content-Type': 'application/json',
+      'Notion-Version': '2022-06-28'
+    },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  });
+
+  if (response.getResponseCode() !== 200) {
+    console.error(`Notion data fetch error (${targetDate}): ${response.getContentText()}`);
+    return [];
+  }
+
+  const data = JSON.parse(response.getContentText());
+  return (data.results || []).map(page => {
+    const props = page.properties;
+    const tags = (props["Tags"]?.multi_select || []).map(t => t.name);
+    const body = fetchPageBodyText(page.id); // 本文も取得
+    const d = new Date(page.created_time);
+    return {
+      date: d.toLocaleDateString("ja-JP"),
+      time: `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`,
+      title: props["Name"]?.title?.[0]?.plain_text || "無題",
+      mood: props["Mood"]?.select?.name || "😐",
+      tags: tags,
+      body: body
+    };
+  });
+}
+
+/**
+ * 指定範囲内のランダムな日付を生成
+ */
+function getRandomDate(start, end) {
+  return new Date(start.getTime() + Math.random() * (end.getTime() - start.getTime()));
+}
+
+/**
+ * 過去ログ表示用 Flex Message ビルダー
+ * @param {Object} log - ログデータ
+ * @param {String} headerLabel - ヘッダーに表示するテキスト（例: "1年前の今日"）
+ */
+function buildPastLogFlex(log, headerLabel) {
+  // カラーパレット: 過去ログは少し落ち着いた色（Indigo系）
+  const HEADER_COLOR = "#3949AB";
+
+  const tags = log.tags || [];
+  const validTags = tags.filter(t => t && String(t).trim() !== "");
+  const tagComponents = validTags.map(tag => ({
+    type: "box",
+    layout: "vertical",
+    contents: [{ type: "text", text: tag, size: "xs", color: "#FFFFFF", align: "center" }],
+    backgroundColor: "#5C6BC0", // 少し明るめのIndigo
+    cornerRadius: "md",
+    paddingAll: "4px",
+    paddingStart: "8px",
+    paddingEnd: "8px"
+  }));
+
+  return {
+    type: "bubble",
+    size: "kilo",
+    styles: {
+      header: { backgroundColor: HEADER_COLOR }
+    },
+    header: {
+      type: "box",
+      layout: "vertical",
+      contents: [
+        { type: "text", text: headerLabel, color: "#FFFFFF", size: "sm", weight: "bold" }
+      ]
+    },
+    body: {
+      type: "box",
+      layout: "vertical",
+      spacing: "md",
+      contents: [
+        { type: "text", text: `${log.date} ${log.time || ""}`, size: "xs", color: "#999999" }, // 日付と時間を表示
+        { type: "text", text: log.title, weight: "bold", size: "lg", wrap: true },
+        {
+          type: "box",
+          layout: "horizontal",
+          spacing: "md",
+          alignItems: "center",
+          contents: [
+            {
+              type: "box",
+              layout: "vertical",
+              contents: [
+                { type: "text", text: log.mood, size: "xl", align: "center", gravity: "center" }
+              ],
+              backgroundColor: "#E8EAF6", // 薄いIndigo
+              cornerRadius: "xxl",
+              width: "44px",
+              height: "44px",
+              justifyContent: "center",
+              alignItems: "center",
+              flex: 0
+            },
+            {
+              type: "box",
+              layout: "horizontal",
+              spacing: "sm",
+              flex: 1,
+              contents: tagComponents.length > 0 ? tagComponents : [{ type: "text", text: "タグなし", size: "xs", color: "#999999" }]
+            }
+          ]
+        },
+        { type: "separator", margin: "md" },
+        {
+          type: "text",
+          text: (log.body || "本文なし").substring(0, 100) + (log.body && log.body.length > 100 ? "..." : ""),
+          size: "sm",
+          color: "#666666",
+          wrap: true,
+          margin: "md"
+        }
+      ]
+    }
+  };
+}
+
+/**
+ * 汎用: 複数メッセージを返信する関数
+ */
+function replyMessages(replyToken, messages) {
+  const url = "https://api.line.me/v2/bot/message/reply";
+  const response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    headers: {
+      'Authorization': `Bearer ${LINE_TOKEN}`,
+      'Content-Type': 'application/json'
+    },
+    payload: JSON.stringify({
+      replyToken: replyToken,
+      messages: messages
+    }),
+    muteHttpExceptions: true
+  });
+
+  if (response.getResponseCode() !== 200) {
+    throw new Error(`LINE Reply Error: ${response.getContentText()}`);
+  }
 }

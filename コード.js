@@ -842,23 +842,28 @@ function handleReviewCommand(replyToken) {
 
 /**
  * /monthly コマンド: 月次レビューをオンデマンド生成
- * 前月のカレンダー月を対象にする
+ * 当月の1日から実行時点までを対象にする
  */
 function handleMonthlyCommand(replyToken) {
   try {
-    // 対象月の範囲を計算（前月1日〜前月末日）
+    // 対象範囲: 当月1日〜現在
     const now = new Date();
-    const targetMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    const targetMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+    const targetMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const targetMonthEnd = now; // 実行時点まで
 
-    // 蓄積された週次レビューを取得し、対象月のもののみフィルタ
+    // 月末かどうか判定（明日が1日 = 今日が月末）
+    const tomorrow = new Date(now);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const isEndOfMonth = tomorrow.getDate() === 1;
+
+    // 蓄積された週次レビューを取得し、当月のもののみフィルタ
     const allWeeklyReviews = getWeeklyReviewHistory();
     const weeklyReviews = filterReviewsByMonth(allWeeklyReviews, targetMonthStart, targetMonthEnd);
 
-    // 対象月のログメタデータを取得（本文なし）
+    // 当月のログメタデータを取得（本文なし）
     const logs = fetchMonthlyLogsFromNotion(targetMonthStart, targetMonthEnd);
     if (logs.length === 0 && weeklyReviews.length === 0) {
-      replyLineMessage(replyToken, "📝 先月の記録と週次レビューの蓄積がないため、月次レビューを生成できません。", buildCommandQuickReply());
+      replyLineMessage(replyToken, "📝 今月の記録と週次レビューの蓄積がないため、月次レビューを生成できません。", buildCommandQuickReply());
       return;
     }
 
@@ -866,6 +871,7 @@ function handleMonthlyCommand(replyToken) {
     const lastMonthlyReview = getLastMonthlyReview();
     const stats = buildLogStatistics(logs);
     const targetYearMonth = targetMonthStart.getFullYear() + "年" + (targetMonthStart.getMonth() + 1) + "月";
+    const label = isEndOfMonth ? targetYearMonth + " 月次レビュー" : targetYearMonth + " 月次レビュー（中間）";
 
     // 月末の未レビュー日の日記本文を補完取得
     const supplementLogs = fetchMonthEndSupplementLogs(weeklyReviews, logs, targetMonthEnd);
@@ -886,7 +892,7 @@ function handleMonthlyCommand(replyToken) {
 
     if (reviewText) {
       const LINE_TEXT_LIMIT = 5000;
-      const header = "📆 【" + targetYearMonth + " 月次レビュー】\n\n";
+      const header = "📆 【" + label + "】\n\n";
       const safeReview = reviewText.length > (LINE_TEXT_LIMIT - header.length - 20)
         ? reviewText.substring(0, LINE_TEXT_LIMIT - header.length - 20) + "\n\n…（以下省略）"
         : reviewText;
@@ -1454,8 +1460,22 @@ function buildUnknownCommandFlex(cmd) {
 // ============================================================
 
 /**
- * 月次レビューのエントリーポイント (GASトリガー実行 - 毎月1日0時想定)
- * 「前月」のカレンダー月を対象にレビューを生成する
+ * 月次レビューのトリガーエントリーポイント
+ * 毎日実行され、月末（明日が1日）のみ sendMonthlyReview を実行する
+ * GASトリガーにはこの関数を「日ベース」で設定する
+ */
+function checkAndSendMonthlyReview() {
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  if (tomorrow.getDate() === 1) {
+    // 明日が1日 = 今日が月末
+    sendMonthlyReview();
+  }
+}
+
+/**
+ * 月次レビューを生成・送信する
+ * 当月の1日から月末（実行時点）までを対象とする
  */
 function sendMonthlyReview() {
   if (!LINE_USER_ID) {
@@ -1463,19 +1483,19 @@ function sendMonthlyReview() {
     return;
   }
 
-  // 対象月の範囲を計算（前月1日〜前月末日）
+  // 対象範囲: 当月1日〜現在
   const now = new Date();
-  const targetMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-  const targetMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+  const targetMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const targetMonthEnd = now;
 
-  // 1. 蓄積された週次レビューを取得し、対象月のもののみフィルタ
+  // 1. 蓄積された週次レビューを取得し、当月のもののみフィルタ
   const allWeeklyReviews = getWeeklyReviewHistory();
   const weeklyReviews = filterReviewsByMonth(allWeeklyReviews, targetMonthStart, targetMonthEnd);
 
-  // 2. 対象月のログメタデータを取得（本文は省略してトークン節約）
+  // 2. 当月のログメタデータを取得（本文は省略してトークン節約）
   const logs = fetchMonthlyLogsFromNotion(targetMonthStart, targetMonthEnd);
   if (logs.length === 0 && weeklyReviews.length === 0) {
-    pushLineMessage("先月は日記の記録と週次レビューの蓄積がありませんでした。今月は記録してみましょう！📓");
+    pushLineMessage("今月は日記の記録と週次レビューの蓄積がありませんでした。来月は記録してみましょう！📓");
     return;
   }
 

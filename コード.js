@@ -765,6 +765,10 @@ function handleCommand(text, replyToken) {
       handleStreakCommand(replyToken);
       break;
 
+    case '/monthly':
+      handleMonthlyCommand(replyToken);
+      break;
+
     default:
       replyFlexMessage(replyToken, "不明なコマンドです", buildUnknownCommandFlex(cmd), buildCommandQuickReply());
       break;
@@ -833,6 +837,66 @@ function handleReviewCommand(replyToken) {
   } catch (e) {
     console.error("reviewコマンドエラー:", e);
     replyLineMessage(replyToken, "⚠️ レビューの生成に失敗しました: " + e.message, buildCommandQuickReply());
+  }
+}
+
+/**
+ * /monthly コマンド: 月次レビューをオンデマンド生成
+ * 前月のカレンダー月を対象にする
+ */
+function handleMonthlyCommand(replyToken) {
+  try {
+    // 対象月の範囲を計算（前月1日〜前月末日）
+    const now = new Date();
+    const targetMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const targetMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+
+    // 蓄積された週次レビューを取得し、対象月のもののみフィルタ
+    const allWeeklyReviews = getWeeklyReviewHistory();
+    const weeklyReviews = filterReviewsByMonth(allWeeklyReviews, targetMonthStart, targetMonthEnd);
+
+    // 対象月のログメタデータを取得（本文なし）
+    const logs = fetchMonthlyLogsFromNotion(targetMonthStart, targetMonthEnd);
+    if (logs.length === 0 && weeklyReviews.length === 0) {
+      replyLineMessage(replyToken, "📝 先月の記録と週次レビューの蓄積がないため、月次レビューを生成できません。", buildCommandQuickReply());
+      return;
+    }
+
+    const userProfile = PROPS.getProperty('USER_PROFILE') || "ユーザーは目標達成に向けて努力している人物です。";
+    const lastMonthlyReview = getLastMonthlyReview();
+    const stats = buildLogStatistics(logs);
+    const targetYearMonth = targetMonthStart.getFullYear() + "年" + (targetMonthStart.getMonth() + 1) + "月";
+
+    // 月末の未レビュー日の日記本文を補完取得
+    const supplementLogs = fetchMonthEndSupplementLogs(weeklyReviews, logs, targetMonthEnd);
+
+    const prompt = buildMonthlyReviewPrompt(userProfile, weeklyReviews, lastMonthlyReview, stats, logs, targetYearMonth, supplementLogs);
+
+    let reviewText = "";
+    let errorLog = "";
+
+    for (const model of MODEL_CANDIDATES) {
+      try {
+        reviewText = callGeminiForText(prompt, model);
+        break;
+      } catch (e) {
+        errorLog += `[${model}] ${e.message}\n`;
+      }
+    }
+
+    if (reviewText) {
+      const LINE_TEXT_LIMIT = 5000;
+      const header = "📆 【" + targetYearMonth + " 月次レビュー】\n\n";
+      const safeReview = reviewText.length > (LINE_TEXT_LIMIT - header.length - 20)
+        ? reviewText.substring(0, LINE_TEXT_LIMIT - header.length - 20) + "\n\n…（以下省略）"
+        : reviewText;
+      replyLineMessage(replyToken, header + safeReview, buildCommandQuickReply());
+    } else {
+      replyLineMessage(replyToken, "⚠️ 月次レビュー生成に失敗しました。\n" + errorLog, buildCommandQuickReply());
+    }
+  } catch (e) {
+    console.error("monthlyコマンドエラー:", e);
+    replyLineMessage(replyToken, "⚠️ 月次レビューの生成に失敗しました: " + e.message, buildCommandQuickReply());
   }
 }
 
@@ -1308,6 +1372,7 @@ function buildHelpFlex() {
     { cmd: "/stats", desc: "直近7日間の統計を表示" },
     { cmd: "/streak", desc: "連続記録日数を表示" },
     { cmd: "/review", desc: "週次レビューを生成" },
+    { cmd: "/monthly", desc: "月次レビューを生成" },
     { cmd: "/help", desc: "ヘルプを表示" }
   ];
 
@@ -1387,6 +1452,375 @@ function buildUnknownCommandFlex(cmd) {
 // ============================================================
 // 週次レビュー プロンプト生成
 // ============================================================
+
+/**
+ * 月次レビューのエントリーポイント (GASトリガー実行 - 毎月1日0時想定)
+ * 「前月」のカレンダー月を対象にレビューを生成する
+ */
+function sendMonthlyReview() {
+  if (!LINE_USER_ID) {
+    console.log("LINE_USER_ID未設定のため月次レビューをスキップします");
+    return;
+  }
+
+  // 対象月の範囲を計算（前月1日〜前月末日）
+  const now = new Date();
+  const targetMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const targetMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+
+  // 1. 蓄積された週次レビューを取得し、対象月のもののみフィルタ
+  const allWeeklyReviews = getWeeklyReviewHistory();
+  const weeklyReviews = filterReviewsByMonth(allWeeklyReviews, targetMonthStart, targetMonthEnd);
+
+  // 2. 対象月のログメタデータを取得（本文は省略してトークン節約）
+  const logs = fetchMonthlyLogsFromNotion(targetMonthStart, targetMonthEnd);
+  if (logs.length === 0 && weeklyReviews.length === 0) {
+    pushLineMessage("先月は日記の記録と週次レビューの蓄積がありませんでした。今月は記録してみましょう！📓");
+    return;
+  }
+
+  // 3. コンテキスト作成
+  const userProfile = PROPS.getProperty('USER_PROFILE') || "ユーザーは目標達成に向けて努力している人物です。";
+  const lastMonthlyReview = getLastMonthlyReview();
+  const stats = buildLogStatistics(logs);
+  const targetYearMonth = targetMonthStart.getFullYear() + "年" + (targetMonthStart.getMonth() + 1) + "月";
+
+  // 3-b. 月末の未レビュー日の日記本文を補完取得
+  const supplementLogs = fetchMonthEndSupplementLogs(weeklyReviews, logs, targetMonthEnd);
+
+  const prompt = buildMonthlyReviewPrompt(userProfile, weeklyReviews, lastMonthlyReview, stats, logs, targetYearMonth, supplementLogs);
+
+  // 4. Geminiでレビュー生成
+  let reviewText = "";
+  let errorLog = "";
+
+  for (const model of MODEL_CANDIDATES) {
+    try {
+      reviewText = callGeminiForText(prompt, model);
+      break;
+    } catch (e) {
+      errorLog += `[${model}] ${e.message}\n`;
+    }
+  }
+
+  if (reviewText) {
+    // レビューテキスト + 月間統計カードを同時送信
+    const LINE_TEXT_LIMIT = 5000;
+    const header = "📆 【" + targetYearMonth + " 月次レビュー】\n\n";
+    const safeReview = reviewText.length > (LINE_TEXT_LIMIT - header.length - 20)
+      ? reviewText.substring(0, LINE_TEXT_LIMIT - header.length - 20) + "\n\n…（以下省略）"
+      : reviewText;
+
+    const statsMsg = { type: 'flex', altText: '📊 ' + targetYearMonth + 'の統計', contents: buildMonthlyStatsFlex(logs, targetMonthStart, targetMonthEnd) };
+    statsMsg.quickReply = buildCommandQuickReply();
+    const messages = [
+      { type: 'text', text: header + safeReview },
+      statsMsg
+    ];
+    pushMessages(messages);
+    saveLastMonthlyReview(reviewText);
+
+    // 5. 月次レビュー送信後、週次レビュー蓄積をクリア（次月に持ち越さない）
+    PROPS.setProperty('WEEKLY_REVIEW_HISTORY', '[]');
+  } else {
+    pushLineMessage("月次レビューの生成に失敗しました。\n" + errorLog);
+  }
+}
+
+/**
+ * Notionから指定期間のログメタデータを取得（本文省略版）
+ * @param {Date} monthStart - 対象月の初日
+ * @param {Date} monthEnd - 対象月の末日
+ */
+function fetchMonthlyLogsFromNotion(monthStart, monthEnd) {
+  const url = `https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`;
+
+  const basePayload = {
+    filter: {
+      and: [
+        { timestamp: "created_time", created_time: { on_or_after: monthStart.toISOString() } },
+        { timestamp: "created_time", created_time: { on_or_before: monthEnd.toISOString() } }
+      ]
+    },
+    sorts: [{ timestamp: "created_time", direction: "ascending" }]
+  };
+
+  // ページネーション対応
+  let allResults = [];
+  let hasMore = true;
+  let nextCursor = undefined;
+
+  while (hasMore) {
+    const payload = { ...basePayload };
+    if (nextCursor) payload.start_cursor = nextCursor;
+
+    const response = UrlFetchApp.fetch(url, {
+      method: 'post',
+      headers: {
+        'Authorization': `Bearer ${NOTION_TOKEN}`,
+        'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28'
+      },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    });
+
+    const code = response.getResponseCode();
+    if (code !== 200) {
+      console.error(`Notion月次データ取得エラー (${code}): ${response.getContentText().substring(0, 200)}`);
+      break;
+    }
+
+    const data = JSON.parse(response.getContentText());
+    allResults = allResults.concat(data.results || []);
+    hasMore = data.has_more === true;
+    nextCursor = data.next_cursor;
+  }
+
+  // 本文は取得しない（トークン節約・API呼び出し削減）
+  return allResults.map(page => {
+    const props = page.properties;
+    const tags = (props["Tags"]?.multi_select || []).map(t => t.name);
+    return {
+      date: new Date(page.created_time).toLocaleDateString("ja-JP"),
+      title: props["Name"]?.title?.[0]?.plain_text || "無題",
+      mood: props["Mood"]?.select?.name || "不明",
+      tags: tags,
+      body: "" // 月次では本文を省略
+    };
+  });
+}
+
+/**
+ * 月末の未レビュー日の日記本文を補完取得する
+ * 週次レビューの最終日以降のエントリの本文を取得し、月末の情報量を補う
+ * @param {Array} weeklyReviews - フィルタ済み週次レビュー
+ * @param {Array} logs - 全月間ログ（本文なし）
+ * @param {Date} monthEnd - 対象月の末日
+ * @returns {Array} 本文付きの補完ログ
+ */
+function fetchMonthEndSupplementLogs(weeklyReviews, logs, monthEnd) {
+  if (weeklyReviews.length === 0) return []; // レビューがない場合は補完不要
+
+  // 最後の週次レビューの日付を取得
+  const lastReviewDate = new Date(weeklyReviews[weeklyReviews.length - 1].date);
+  if (isNaN(lastReviewDate.getTime())) return [];
+
+  // 最終レビュー日の翌日から月末までを補完対象とする
+  const supplementStart = new Date(lastReviewDate);
+  supplementStart.setDate(supplementStart.getDate() + 1);
+  supplementStart.setHours(0, 0, 0, 0);
+
+  // 補完対象の日付があるかチェック
+  const supplementEntries = logs.filter(log => {
+    const d = new Date(log.date);
+    return !isNaN(d.getTime()) && d >= supplementStart;
+  });
+
+  if (supplementEntries.length === 0) return [];
+
+  // Notion APIで補完対象期間のページを再取得（本文付き）
+  const url = `https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`;
+  const response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    headers: {
+      'Authorization': `Bearer ${NOTION_TOKEN}`,
+      'Content-Type': 'application/json',
+      'Notion-Version': '2022-06-28'
+    },
+    payload: JSON.stringify({
+      filter: {
+        and: [
+          { timestamp: "created_time", created_time: { on_or_after: supplementStart.toISOString() } },
+          { timestamp: "created_time", created_time: { on_or_before: monthEnd.toISOString() } }
+        ]
+      },
+      sorts: [{ timestamp: "created_time", direction: "ascending" }]
+    }),
+    muteHttpExceptions: true
+  });
+
+  if (response.getResponseCode() !== 200) {
+    console.error("月末補完データ取得エラー");
+    return [];
+  }
+
+  const data = JSON.parse(response.getContentText());
+  return (data.results || []).map(page => {
+    const props = page.properties;
+    const tags = (props["Tags"]?.multi_select || []).map(t => t.name);
+    const body = fetchPageBodyText(page.id);
+    return {
+      date: new Date(page.created_time).toLocaleDateString("ja-JP"),
+      title: props["Name"]?.title?.[0]?.plain_text || "無題",
+      mood: props["Mood"]?.select?.name || "不明",
+      tags: tags,
+      body: body
+    };
+  });
+}
+
+/**
+ * 月間統計のFlex Message（深紫テーマで週次と視覚的に区別）
+ * @param {Array} logs - 月間ログ
+ * @param {Date} monthStart - 対象月の初日
+ * @param {Date} monthEnd - 対象月の末日
+ */
+function buildMonthlyStatsFlex(logs, monthStart, monthEnd) {
+  const totalEntries = logs.length;
+
+  // ムード分布
+  const moodCounts = {};
+  logs.forEach(log => { moodCounts[log.mood] = (moodCounts[log.mood] || 0) + 1; });
+  const moodItems = Object.entries(moodCounts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([mood, count]) => ({
+      type: "box",
+      layout: "horizontal",
+      contents: [
+        { type: "filler", flex: 1 },
+        { type: "text", text: mood, size: "md", flex: 2, align: "center", gravity: "center" },
+        {
+          type: "box",
+          layout: "horizontal",
+          flex: 2,
+          justifyContent: "center",
+          alignItems: "center",
+          contents: [
+            { type: "text", text: String(count), size: "sm", color: "#666666", flex: 0 },
+            { type: "text", text: "回", size: "sm", color: "#666666", flex: 0, margin: "xs" }
+          ]
+        },
+        { type: "filler", flex: 1 }
+      ]
+    }));
+
+  // タグ頻度
+  const tagCounts = {};
+  logs.forEach(log => { log.tags.forEach(tag => { tagCounts[tag] = (tagCounts[tag] || 0) + 1; }); });
+  const tagItems = Object.entries(tagCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([tag, count]) => ({
+      type: "box",
+      layout: "horizontal",
+      contents: [
+        { type: "filler", flex: 1 },
+        { type: "text", text: tag, size: "sm", flex: 2, align: "center", gravity: "center" },
+        {
+          type: "box",
+          layout: "horizontal",
+          flex: 2,
+          justifyContent: "center",
+          alignItems: "center",
+          contents: [
+            { type: "text", text: String(count), size: "sm", color: "#666666", flex: 0 },
+            { type: "text", text: "回", size: "sm", color: "#666666", flex: 0, margin: "xs" }
+          ]
+        },
+        { type: "filler", flex: 1 }
+      ]
+    }));
+
+  // 記録がある日数
+  const uniqueDays = new Set(logs.map(log => log.date)).size;
+
+  // カレンダー月の日付範囲を表示
+  const dayNames = ['日', '月', '火', '水', '木', '金', '土'];
+  const dateRange = (monthStart.getMonth() + 1) + "/" + monthStart.getDate() + "(" + dayNames[monthStart.getDay()] + ") ~ " + (monthEnd.getMonth() + 1) + "/" + monthEnd.getDate() + "(" + dayNames[monthEnd.getDay()] + ")";
+
+  // 記録率（対象月の実際の日数で計算）
+  const daysInMonth = monthEnd.getDate();
+  const recordRate = Math.round((uniqueDays / daysInMonth) * 100);
+
+  return {
+    type: "bubble",
+    size: "kilo",
+    styles: {
+      header: { backgroundColor: "#4A148C" }
+    },
+    header: {
+      type: "box",
+      layout: "vertical",
+      contents: [
+        { type: "text", text: "📊 " + dateRange + " の月間統計", color: "#FFFFFF", size: "sm", weight: "bold" }
+      ]
+    },
+    body: {
+      type: "box",
+      layout: "vertical",
+      spacing: "md",
+      contents: [
+        // 記録数サマリー（3カラム: 記録数・日数・記録率）
+        {
+          type: "box",
+          layout: "horizontal",
+          contents: [
+            {
+              type: "box",
+              layout: "vertical",
+              contents: [
+                { type: "text", text: String(totalEntries), size: "xxl", weight: "bold", align: "center", color: "#4A148C" },
+                { type: "text", text: "記録数", size: "xs", align: "center", color: "#999999" }
+              ],
+              flex: 1
+            },
+            {
+              type: "box",
+              layout: "vertical",
+              contents: [
+                { type: "text", text: String(uniqueDays), size: "xxl", weight: "bold", align: "center", color: "#4A148C" },
+                { type: "text", text: "日数", size: "xs", align: "center", color: "#999999" }
+              ],
+              flex: 1
+            },
+            {
+              type: "box",
+              layout: "vertical",
+              contents: [
+                { type: "text", text: recordRate + "%", size: "xxl", weight: "bold", align: "center", color: "#4A148C" },
+                { type: "text", text: "記録率", size: "xs", align: "center", color: "#999999" }
+              ],
+              flex: 1
+            }
+          ]
+        },
+        { type: "separator" },
+        // ムード分布 & タグ頻度 横並び
+        {
+          type: "box",
+          layout: "horizontal",
+          spacing: "md",
+          contents: [
+            {
+              type: "box",
+              layout: "vertical",
+              spacing: "xs",
+              flex: 1,
+              alignItems: "center",
+              contents: [
+                { type: "text", text: "ムード", size: "xs", weight: "bold", color: "#333333" },
+                ...moodItems
+              ]
+            },
+            { type: "separator" },
+            {
+              type: "box",
+              layout: "vertical",
+              spacing: "xs",
+              flex: 1,
+              alignItems: "center",
+              contents: [
+                { type: "text", text: "タグ TOP5", size: "xs", weight: "bold", color: "#333333" },
+                ...tagItems
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  };
+}
 
 /**
  * 週次レビューのプロンプトを組み立てる (sendWeeklyReview / /review コマンド 共通)
@@ -1491,6 +1925,134 @@ ${userProfile}
   return prompt;
 }
 
+/**
+ * 月次レビューのプロンプトを組み立てる (sendMonthlyReview / /monthly コマンド 共通)
+ * 週次レビューの蓄積を主要な入力とし、月間ログのメタデータで補完する
+ */
+function buildMonthlyReviewPrompt(userProfile, weeklyReviews, lastMonthlyReview, stats, logs, yearMonth, supplementLogs) {
+  // yearMonthは呼び出し元から渡される（例: "2026年1月"）
+  // supplementLogsは月末の未レビュー日の日記本文（補完用）
+
+  let prompt = `あなたはユーザーの長期的な成長を見守る「パーソナルライフコーチ」です。
+以下のフレームワークと情報に基づき、この1ヶ月間を深く振り返る月次レビューを作成してください。
+週次レビューが「1週間のスナップショット」であるのに対し、月次レビューは「1ヶ月の物語」です。
+点と点をつなぎ、本人も気づいていない変化の流れを浮かび上がらせてください。
+
+【👤 ユーザー情報（内部参照用）】
+※この情報はログの行動パターンを正しく解釈するための背景知識として使用すること。
+※出力でプロフィール内容に直接言及しないこと（「理系のあなたは〜」「研究者として〜」のような表現は禁止）。
+${userProfile}
+
+【🧠 月次レビュー用 分析フレームワーク（内部参照用・出力には含めないこと）】
+
+■ ナラティブ・アイデンティティ（McAdams）
+- 週次レビューの蓄積を「1ヶ月の物語」として読み解く
+- 月の前半と後半で語り口や行動パターンに変化があったか
+- ユーザーの「自分はこういう人間だ」という自己物語がどう表れているか
+- 成長や変化を「物語の転換点」として捉え、言語化する
+
+■ 自己決定理論 (SDT: Deci & Ryan) ── 月間スケールで
+- 自律性・有能感・関係性の3つの心理欲求について、月全体での充足パターンを読む
+- 週によって充足度に波がある場合、その波の原因（環境変化、プロジェクトの節目など）を推測する
+- 月間を通じて慢性的に不足している欲求があれば、構造的な改善を提案する
+
+■ ポジティブ心理学 (Seligman: PERMA) ── 強みの進化
+- 1ヶ月の中で「繰り返し発揮されている強み」を特定する
+- 月の前半と後半で強みの使い方に変化や深まりがあったかを検出する
+- 新しく芽生えた強みや、まだ十分に活かされていない潜在的な強みに注目する
+
+■ 習慣形成理論 (Clear: Atomic Habits)
+- 記録の頻度パターンから習慣の定着度を読み取る
+- 「習慣スタッキング」の兆候（ある行動が別の行動を自然に引き起こしている）を発見する
+- 習慣が途切れた時期がある場合、その前後の状況からトリガーと障壁を推測する
+
+■ フロー理論 (Csikszentmihalyi)
+- タグやムードのパターンから、ユーザーが「没頭していた」と推測される活動を特定する
+- スキルとチャレンジのバランスが取れていた時期・崩れていた時期を読み取る
+- フロー状態に入りやすい条件（時間帯、前後の活動、環境）を推測する
+
+■ 認知行動療法 (CBT) ── 長期パターン
+- 1ヶ月のムード推移から、週次レビューでは見えなかった長期的な認知パターンを検出する
+- 特定の曜日や週に気分が下がりやすいパターンがないか確認する
+- 「思考の癖」が繰り返し現れている場合、それに気づかせる問いかけをする
+
+【🚫 やってはいけないこと】
+- フレームワーク名（SDT、PERMA、CBT、ナラティブなど）を出力に含めない。専門用語ではなく日常的な言葉で語ること
+- 全セクションを均等に書かない。今月特に顕著だったテーマに重点を置き、メリハリをつけること
+- 「頑張りましたね」「素晴らしいですね」「充実した1ヶ月でしたね」など漠然とした褒め言葉は禁止。具体的な行動や変化に言及すること
+- 週次レビューに書かれていない事実を捏造しない。推測する場合は「もしかすると〜かもしれません」と明示すること
+- 週次レビューの内容を単に並べ直すだけの要約にしない。週を横断して初めて見える「パターン」や「変化の流れ」を発見すること
+- **太字**、*斜体*、# 見出し、- リストなどMarkdown記法は一切使用禁止。LINEはMarkdown非対応のため、そのまま記号が表示されてしまう。強調したい場合は「」や【】で囲むこと
+
+【📝 出力ルール】
+- 全体で700〜1000文字程度（月次レビューなのでやや長め。ただしLINEで読みきれる分量）
+- Markdown記法（**太字**など）は使用禁止。見出しは【 】と絵文字で表現
+- 語りかける二人称「あなた」を使い、温かみのある口調で
+- 週次レビューの引用は「第○週のレビューで触れた〜」のように自然に織り込むこと
+- 分析の根拠を必ずデータに紐づけること（エビデンスベースド）
+
+【📊 月次レビュー構成（この順序で出力）】
+
+1. 📆 ${yearMonth}の振り返り
+   - この1ヶ月を一言で表すなら何か（キャッチフレーズ的な導入文を1行）
+   - 月の全体像を2〜3文で俯瞰する。前半と後半で雰囲気の違いがあれば触れる
+
+2. 🏆 今月発見された「あなたの強み」
+   - 複数週にわたって繰り返し発揮された強みを1〜2個ピックアップ
+   - 先月と比べて強みの使い方に変化や深まりがあれば言及する
+   - 結果ではなく行動パターンや姿勢を評価する
+
+3. 📈 1ヶ月のリズムとパターン
+   - ムード推移の全体的な傾向（上向き傾向、波がある、安定しているなど）
+   - 特定の活動や習慣と気分の相関で、月間データから初めて見えるもの
+   - 記録の頻度パターンから読み取れる生活リズムの安定度
+
+4. 🔄 繰り返し現れたテーマ
+   - 複数の週次レビューで共通して登場したキーワード、課題、または成長テーマ
+   - 月初に出ていた課題が月末までにどう変化（解決・継続・深化）したか
+   - まだ解決されていない「持ち越し課題」があれば率直に指摘する
+
+5. 🎯 来月への提案
+   - 今月のパターンから導き出された、来月に試してほしい具体的なアクション1〜2個
+   - 「続けるべきこと」と「変えてみること」をそれぞれ1つずつ
+   - 実行しやすい粒度（いつ、何を、どのくらい）で提案する
+`;
+
+  // 前回の月次レビューがあれば追加
+  if (lastMonthlyReview) {
+    prompt += `\n【📌 前回の月次レビュー（参考）】\n以下は先月の月次レビュー内容です。先月提案した行動が実行されたか、先月の課題が改善されたか、といった月をまたいだ連続性を意識してください。\n${lastMonthlyReview}\n`;
+  }
+
+  // 月間統計サマリー
+  prompt += `\n【📈 今月の統計サマリー】\n${stats}\n`;
+
+  // 蓄積された週次レビュー
+  if (weeklyReviews.length > 0) {
+    prompt += `\n【📋 蓄積された週次レビュー（${weeklyReviews.length}件）】\nこれが月次レビューの最も重要な入力です。各週のレビュー内容を横断的に分析し、週を超えて見えるパターンや変化の流れを発見してください。\n※注意: 週次レビューは7日間単位で生成されるため、月初・月末付近のレビューには前月または翌月の数日分の内容が含まれている場合があります。${yearMonth}の内容に重点を置いて分析してください。\n`;
+    weeklyReviews.forEach((review, i) => {
+      prompt += `\n--- 第${i + 1}週 (${review.date}) ---\n${review.text}\n`;
+    });
+  } else {
+    prompt += `\n【📋 週次レビューの蓄積】\n蓄積された週次レビューはありません。以下の日記ログのメタデータのみから分析してください。\n`;
+  }
+
+  // 日記ログのメタデータ
+  prompt += `\n【日記ログメタデータ（${yearMonth}）】\n※基本的に本文は省略されています。タイトル・ムード・タグの推移パターンを分析に活用してください。\n`;
+  logs.forEach(log => {
+    prompt += `[${log.date}] 気分:${log.mood} タグ:${log.tags.join(", ")} タイトル:${log.title}\n`;
+  });
+
+  // 月末補完ログ（本文付き）
+  if (supplementLogs && supplementLogs.length > 0) {
+    prompt += `\n【📝 月末の補完データ（本文付き）】\n以下は最後の週次レビュー以降の日記です。週次レビューでカバーされていないため、本文を含めて提供します。月末の分析に特に活用してください。\n`;
+    supplementLogs.forEach(log => {
+      prompt += `---\n[${log.date}] 気分:${log.mood} タグ:${log.tags.join(", ")}\nタイトル: ${log.title}\n本文: ${log.body}\n`;
+    });
+  }
+
+  return prompt;
+}
+
 // ============================================================
 // ユーティリティ
 // ============================================================
@@ -1510,6 +2072,16 @@ function saveLastReview(text) {
   // 長すぎる場合は切り詰め（PropertiesServiceの制限: 1値9KB）
   const safeText = (text || "").substring(0, 2000);
   PROPS.setProperty('LAST_WEEKLY_REVIEW', safeText);
+
+  // 月次レビュー用: 直近5件の週次レビューを蓄積
+  const history = JSON.parse(PROPS.getProperty('WEEKLY_REVIEW_HISTORY') || '[]');
+  history.push({
+    date: new Date().toLocaleDateString("ja-JP"),
+    text: (text || "").substring(0, 1500)
+  });
+  // 直近5件のみ保持
+  while (history.length > 5) history.shift();
+  PROPS.setProperty('WEEKLY_REVIEW_HISTORY', JSON.stringify(history));
 }
 
 /**
@@ -1517,6 +2089,43 @@ function saveLastReview(text) {
  */
 function getLastReview() {
   return PROPS.getProperty('LAST_WEEKLY_REVIEW') || "";
+}
+
+/**
+ * 蓄積された週次レビュー履歴を取得
+ * @returns {Array<{date: string, text: string}>}
+ */
+function getWeeklyReviewHistory() {
+  return JSON.parse(PROPS.getProperty('WEEKLY_REVIEW_HISTORY') || '[]');
+}
+
+/**
+ * 週次レビュー配列を対象月でフィルタリングする
+ * @param {Array<{date: string, text: string}>} reviews - 全週次レビュー
+ * @param {Date} monthStart - 対象月の初日
+ * @param {Date} monthEnd - 対象月の末日
+ * @returns {Array<{date: string, text: string}>} 対象月に該当するレビューのみ
+ */
+function filterReviewsByMonth(reviews, monthStart, monthEnd) {
+  return reviews.filter(review => {
+    const d = new Date(review.date);
+    return !isNaN(d.getTime()) && d >= monthStart && d <= monthEnd;
+  });
+}
+
+/**
+ * 前回の月次レビューを保存
+ */
+function saveLastMonthlyReview(text) {
+  const safeText = (text || "").substring(0, 2000);
+  PROPS.setProperty('LAST_MONTHLY_REVIEW', safeText);
+}
+
+/**
+ * 前回の月次レビューを取得
+ */
+function getLastMonthlyReview() {
+  return PROPS.getProperty('LAST_MONTHLY_REVIEW') || "";
 }
 
 /**

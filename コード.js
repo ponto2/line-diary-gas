@@ -558,6 +558,58 @@ function fetchTodayLogsFromNotion() {
 }
 
 /**
+ * 2-d. 昨日のログを取得 (Notion)
+ */
+function fetchYesterdayLogsFromNotion() {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+
+  const isoStart = yesterday.toISOString();
+  const isoEnd = today.toISOString();
+
+  const url = `https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`;
+  const response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    headers: {
+      'Authorization': `Bearer ${NOTION_TOKEN}`,
+      'Content-Type': 'application/json',
+      'Notion-Version': '2022-06-28'
+    },
+    payload: JSON.stringify({
+      filter: {
+        and: [
+          { timestamp: "created_time", created_time: { on_or_after: isoStart } },
+          { timestamp: "created_time", created_time: { before: isoEnd } }
+        ]
+      },
+      sorts: [{ timestamp: "created_time", direction: "ascending" }]
+    }),
+    muteHttpExceptions: true
+  });
+
+  if (response.getResponseCode() !== 200) {
+    throw new Error(`Notionデータ取得エラー: ${response.getContentText()}`);
+  }
+
+  const data = JSON.parse(response.getContentText());
+  const results = data.results || [];
+
+  return results.map(page => {
+    const props = page.properties;
+    const tags = (props["Tags"]?.multi_select || []).map(t => t.name);
+    const time = new Date(page.created_time);
+    return {
+      time: `${time.getHours()}:${String(time.getMinutes()).padStart(2, '0')}`,
+      title: props["Name"]?.title?.[0]?.plain_text || "無題",
+      mood: props["Mood"]?.select?.name || "😐",
+      tags: tags
+    };
+  });
+}
+
+/**
  * 2-b. Notionページの本文テキストを取得
  */
 function fetchPageBodyText(pageId) {
@@ -726,11 +778,12 @@ function replyFlexMessage(replyToken, altText, flexContents, quickReply) {
 function buildCommandQuickReply() {
   var items = [
     { type: "action", action: { type: "message", label: "📝 今日", text: "/today" } },
-    { type: "action", action: { type: "message", label: "🔥 連続", text: "/streak" } },
-    { type: "action", action: { type: "message", label: "📊 統計", text: "/stats" } },
+    { type: "action", action: { type: "message", label: "⏪ 昨日", text: "/yesterday" } },
     { type: "action", action: { type: "message", label: "🎲 ガチャ", text: "/random" } },
-    { type: "action", action: { type: "message", label: "📅 レビュー", text: "/review" } },
-    { type: "action", action: { type: "message", label: "📅 1年前", text: "/onthisday" } }
+    { type: "action", action: { type: "message", label: "📊 統計", text: "/stats" } },
+    { type: "action", action: { type: "message", label: "🔥 連続", text: "/streak" } },
+    { type: "action", action: { type: "message", label: "🧐 レビュー", text: "/review" } },
+    { type: "action", action: { type: "message", label: "🕰️ 1年前", text: "/onthisday" } }
   ];
   return { items: items };
 }
@@ -761,6 +814,10 @@ function handleCommand(text, replyToken) {
 
     case '/today':
       handleTodayCommand(replyToken);
+      break;
+
+    case '/yesterday':
+      handleYesterdayCommand(replyToken);
       break;
 
     case '/streak':
@@ -937,6 +994,26 @@ function handleTodayCommand(replyToken) {
 }
 
 /**
+ * /yesterday 昨日の記録一覧を表示
+ */
+function handleYesterdayCommand(replyToken) {
+  try {
+    const logs = fetchYesterdayLogsFromNotion();
+
+    if (logs.length === 0) {
+      replyLineMessage(replyToken, "📝 昨日の記録はありませんでした。", buildCommandQuickReply());
+      return;
+    }
+
+    const flexContent = buildYesterdayFlex(logs);
+    replyFlexMessage(replyToken, `📝 昨日の記録 (${logs.length}件)`, flexContent, buildCommandQuickReply());
+  } catch (e) {
+    console.error("yesterdayコマンドエラー:", e);
+    replyLineMessage(replyToken, "⚠️ 昨日の記録の取得に失敗しました: " + e.message, buildCommandQuickReply());
+  }
+}
+
+/**
  * /streak コマンド: 連続記録日数を表示
  */
 function handleStreakCommand(replyToken) {
@@ -1097,6 +1174,68 @@ function buildTodayFlex(logs) {
   const today = new Date();
   const dayNames = ['日', '月', '火', '水', '木', '金', '土'];
   const dateStr = (today.getMonth() + 1) + '/' + today.getDate() + '(' + dayNames[today.getDay()] + ')';
+
+  const logItems = logs.map(function (log) {
+    var tagText = log.tags.length > 0 ? log.tags.join(', ') : '';
+    var subText = [log.mood, tagText].filter(Boolean).join('  ');
+    return {
+      type: "box",
+      layout: "vertical",
+      spacing: "xs",
+      contents: [
+        {
+          type: "box",
+          layout: "horizontal",
+          spacing: "sm",
+          contents: [
+            { type: "text", text: log.time, size: "xs", color: "#999999", flex: 0 },
+            { type: "text", text: log.title, size: "sm", weight: "bold", wrap: true, flex: 1 }
+          ]
+        },
+        { type: "text", text: subText, size: "xs", color: "#666666", margin: "xs" }
+      ]
+    };
+  });
+
+  var bodyContents = [];
+  logItems.forEach(function (item, i) {
+    bodyContents.push(item);
+    if (i < logItems.length - 1) {
+      bodyContents.push({ type: "separator", margin: "md" });
+    }
+  });
+
+  return {
+    type: "bubble",
+    size: "kilo",
+    styles: {
+      header: { backgroundColor: "#1B5E20" }
+    },
+    header: {
+      type: "box",
+      layout: "horizontal",
+      contents: [
+        { type: "text", text: dateStr + " の記録", color: "#FFFFFF", size: "sm", weight: "bold", flex: 1 },
+        { type: "text", text: logs.length + "件", color: "#E8F5E9", size: "sm", align: "end", flex: 0 }
+      ]
+    },
+    body: {
+      type: "box",
+      layout: "vertical",
+      spacing: "md",
+      contents: bodyContents
+    }
+  };
+}
+
+/**
+ * /yesterday 昨日の記録一覧のFlex Message
+ */
+function buildYesterdayFlex(logs) {
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const dayNames = ['日', '月', '火', '水', '木', '金', '土'];
+  const dateStr = (yesterday.getMonth() + 1) + '/' + yesterday.getDate() + '(' + dayNames[yesterday.getDay()] + ')';
 
   const logItems = logs.map(function (log) {
     var tagText = log.tags.length > 0 ? log.tags.join(', ') : '';
@@ -1385,6 +1524,7 @@ function buildStatsFlex(logs) {
 function buildHelpFlex() {
   const commands = [
     { cmd: "/today", desc: "今日の記録一覧を表示" },
+    { cmd: "/yesterday", desc: "昨日の記録一覧を表示" },
     { cmd: "/stats", desc: "直近7日間の統計を表示" },
     { cmd: "/streak", desc: "連続記録日数を表示" },
     { cmd: "/review", desc: "週次レビューを生成" },

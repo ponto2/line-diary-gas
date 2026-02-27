@@ -89,6 +89,8 @@ function processContent(text, imageUrl, imageBlob, replyToken) {
 
   if (result.success) {
     saveToNotion(result.data, text, imageUrl);
+    // streakキャッシュ更新（失敗しても日記記録には影響なし）
+    try { updateStreakCache(); } catch (e) { console.error("streak cache update failed:", e); }
     // Notion保存成功をFlex Messageで返信
     if (replyToken) {
       try {
@@ -123,6 +125,8 @@ function processContent(text, imageUrl, imageBlob, replyToken) {
       `⚠️ AI解析失敗\n\n【エラー】\n${result.error}\n\n【原文】\n${text}`,
       imageUrl
     );
+    // streakキャッシュ更新（失敗しても日記記録には影響なし）
+    try { updateStreakCache(); } catch (e) { console.error("streak cache update failed:", e); }
     if (replyToken) {
       replyLineMessage(replyToken, "⚠️ AI解析に失敗しましたが、原文をNotionに保存しました", buildCommandQuickReply());
     }
@@ -1014,75 +1018,202 @@ function handleYesterdayCommand(replyToken) {
 }
 
 /**
- * /streak コマンド: 連続記録日数を表示
+ * 日付をYYYY-MM-DD形式の文字列に変換
  */
-function handleStreakCommand(replyToken) {
-  try {
-    // 過去30日分のログを取得して連続日数を計算
-    const url = `https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`;
-    const since = new Date();
-    since.setHours(0, 0, 0, 0);
-    since.setDate(since.getDate() - 30);
+function formatDateKey(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
 
-    const response = UrlFetchApp.fetch(url, {
-      method: 'post',
-      headers: {
-        'Authorization': `Bearer ${NOTION_TOKEN}`,
-        'Content-Type': 'application/json',
-        'Notion-Version': '2022-06-28'
-      },
-      payload: JSON.stringify({
+/**
+ * 日記記録時にstreakキャッシュを更新する
+ * PropertiesServiceのみ使用（Notion APIコール0回）
+ */
+function updateStreakCache() {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayKey = formatDateKey(today);
+
+  const streakCount = parseInt(PROPS.getProperty('STREAK_COUNT') || '0', 10);
+  const lastDate = PROPS.getProperty('STREAK_LAST_DATE') || '';
+  const totalDays = parseInt(PROPS.getProperty('STREAK_TOTAL_DAYS') || '0', 10);
+
+  if (lastDate === todayKey) {
+    // 同日2回目以降の記録 → 何もしない
+    return;
+  }
+
+  // 昨日の日付を計算
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yesterdayKey = formatDateKey(yesterday);
+
+  if (lastDate === yesterdayKey) {
+    // 昨日も記録あり → streak継続
+    PROPS.setProperty('STREAK_COUNT', String(streakCount + 1));
+  } else {
+    // 途切れた or 初回 → streakリセット
+    PROPS.setProperty('STREAK_COUNT', '1');
+  }
+
+  PROPS.setProperty('STREAK_LAST_DATE', todayKey);
+  PROPS.setProperty('STREAK_TOTAL_DAYS', String(totalDays + 1));
+}
+
+/**
+ * キャッシュ未初期化時: 30日ウィンドウ方式でstreakをフル計算
+ * ページネーション対応、ウィンドウを遡って連続が途切れるまで計算
+ */
+function initStreakCache() {
+  const url = `https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayKey = formatDateKey(today);
+
+  const recordedDates = new Set();
+  let windowEnd = new Date(today);
+  windowEnd.setDate(windowEnd.getDate() + 1); // 明日（排他的上限）
+
+  // 30日ウィンドウを遡りながら記録日を収集
+  for (let w = 0; w < 40; w++) { // 最大約3年分（40ウィンドウ × 30日）
+    const windowStart = new Date(windowEnd);
+    windowStart.setDate(windowStart.getDate() - 30);
+
+    // このウィンドウの全レコードを取得（ページネーション対応）
+    let hasMore = true;
+    let nextCursor = null;
+
+    while (hasMore) {
+      const payload = {
         filter: {
           timestamp: "created_time",
-          created_time: { on_or_after: since.toISOString() }
+          created_time: {
+            on_or_after: windowStart.toISOString(),
+            before: windowEnd.toISOString()
+          }
         },
-        sorts: [{ timestamp: "created_time", direction: "descending" }]
-      }),
-      muteHttpExceptions: true
-    });
+        sorts: [{ timestamp: "created_time", direction: "descending" }],
+        page_size: 100
+      };
+      if (nextCursor) payload.start_cursor = nextCursor;
 
-    if (response.getResponseCode() !== 200) {
-      replyLineMessage(replyToken, "⚠️ データの取得に失敗しました", buildCommandQuickReply());
-      return;
+      const response = UrlFetchApp.fetch(url, {
+        method: 'post',
+        headers: {
+          'Authorization': `Bearer ${NOTION_TOKEN}`,
+          'Content-Type': 'application/json',
+          'Notion-Version': '2022-06-28'
+        },
+        payload: JSON.stringify(payload),
+        muteHttpExceptions: true
+      });
+
+      if (response.getResponseCode() !== 200) break;
+
+      const data = JSON.parse(response.getContentText());
+      (data.results || []).forEach(page => {
+        recordedDates.add(formatDateKey(new Date(page.created_time)));
+      });
+
+      hasMore = data.has_more;
+      nextCursor = data.next_cursor;
     }
 
-    const data = JSON.parse(response.getContentText());
-    const results = data.results || [];
-
-    // 記録がある日のSetを作成（YYYY-MM-DD形式）
-    const recordedDates = new Set();
-    results.forEach(page => {
-      const d = new Date(page.created_time);
-      recordedDates.add(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
-    });
-
     // 今日から遡って連続日数を計算
-    let streak = 0;
-    const check = new Date();
-    check.setHours(0, 0, 0, 0);
-
-    // 今日の記録がなければストリーク0
-    const todayKey = `${check.getFullYear()}-${String(check.getMonth() + 1).padStart(2, '0')}-${String(check.getDate()).padStart(2, '0')}`;
+    const check = new Date(today);
     if (!recordedDates.has(todayKey)) {
-      // 今日まだ記録していない場合、昨日まででカウント
       check.setDate(check.getDate() - 1);
     }
 
-    for (let i = 0; i < 31; i++) {
-      const key = `${check.getFullYear()}-${String(check.getMonth() + 1).padStart(2, '0')}-${String(check.getDate()).padStart(2, '0')}`;
-      if (recordedDates.has(key)) {
+    let streak = 0;
+    let streakBroken = false;
+    while (check >= windowStart) {
+      if (recordedDates.has(formatDateKey(check))) {
         streak++;
         check.setDate(check.getDate() - 1);
       } else {
+        streakBroken = true;
         break;
       }
     }
 
-    const totalDays = recordedDates.size;
-    const hasTodayRecord = recordedDates.has(todayKey);
+    if (streakBroken) {
+      // 途切れた → 確定
+      const lastDate = recordedDates.has(todayKey) ? todayKey : formatDateKey(new Date(today.getTime() - 86400000));
+      PROPS.setProperty('STREAK_COUNT', String(streak));
+      PROPS.setProperty('STREAK_LAST_DATE', lastDate);
+      PROPS.setProperty('STREAK_TOTAL_DAYS', String(recordedDates.size));
+      return { streak: streak, totalDays: recordedDates.size, hasTodayRecord: recordedDates.has(todayKey) };
+    }
 
-    const flexContent = buildStreakFlex(streak, totalDays, hasTodayRecord);
-    replyFlexMessage(replyToken, `🔥 連続${streak}日`, flexContent, buildCommandQuickReply());
+    // 次のウィンドウへ（さらに過去へ）
+    windowEnd = new Date(windowStart);
+  }
+
+  // 全ウィンドウを走査した場合もキャッシュに保存
+  const check = new Date(today);
+  if (!recordedDates.has(todayKey)) {
+    check.setDate(check.getDate() - 1);
+  }
+  let streak = 0;
+  while (recordedDates.has(formatDateKey(check))) {
+    streak++;
+    check.setDate(check.getDate() - 1);
+  }
+
+  const lastDate = recordedDates.has(todayKey) ? todayKey : formatDateKey(new Date(today.getTime() - 86400000));
+  PROPS.setProperty('STREAK_COUNT', String(streak));
+  PROPS.setProperty('STREAK_LAST_DATE', lastDate);
+  PROPS.setProperty('STREAK_TOTAL_DAYS', String(recordedDates.size));
+  return { streak: streak, totalDays: recordedDates.size, hasTodayRecord: recordedDates.has(todayKey) };
+}
+
+/**
+ * /streak コマンド: 連続記録日数を表示（キャッシュベース）
+ */
+function handleStreakCommand(replyToken) {
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayKey = formatDateKey(today);
+    const yesterdayKey = formatDateKey(new Date(today.getTime() - 86400000));
+
+    let streakCount = PROPS.getProperty('STREAK_COUNT');
+    let lastDate = PROPS.getProperty('STREAK_LAST_DATE');
+    let totalDays = parseInt(PROPS.getProperty('STREAK_TOTAL_DAYS') || '0', 10);
+
+    // キャッシュが未初期化の場合、フル計算
+    if (streakCount === null || lastDate === null) {
+      const result = initStreakCache();
+      streakCount = result.streak;
+      totalDays = result.totalDays;
+      const hasTodayRecord = result.hasTodayRecord;
+      const flexContent = buildStreakFlex(streakCount, totalDays, hasTodayRecord);
+      replyFlexMessage(replyToken, `🔥 連続${streakCount}日`, flexContent, buildCommandQuickReply());
+      return;
+    }
+
+    streakCount = parseInt(streakCount, 10);
+
+    // キャッシュから現在のstreakを算出
+    let currentStreak;
+    let hasTodayRecord;
+
+    if (lastDate === todayKey) {
+      // 今日記録済み → キャッシュそのまま
+      currentStreak = streakCount;
+      hasTodayRecord = true;
+    } else if (lastDate === yesterdayKey) {
+      // 昨日が最後 → streak継続中、今日はまだ
+      currentStreak = streakCount;
+      hasTodayRecord = false;
+    } else {
+      // 2日以上前 → streak途切れ
+      currentStreak = 0;
+      hasTodayRecord = false;
+    }
+
+    const flexContent = buildStreakFlex(currentStreak, totalDays, hasTodayRecord);
+    replyFlexMessage(replyToken, `🔥 連続${currentStreak}日`, flexContent, buildCommandQuickReply());
   } catch (e) {
     console.error("streakコマンドエラー:", e);
     replyLineMessage(replyToken, "⚠️ 連続記録の取得に失敗しました: " + e.message, buildCommandQuickReply());
@@ -1348,7 +1479,7 @@ function buildStreakFlex(streak, totalDays, hasTodayRecord) {
               type: "box",
               layout: "vertical",
               contents: [
-                { type: "text", text: "過去30日", size: "xs", color: "#999999", align: "center" },
+                { type: "text", text: "総記録日数", size: "xs", color: "#999999", align: "center" },
                 { type: "text", text: totalDays + "日", size: "md", weight: "bold", align: "center" }
               ],
               flex: 1

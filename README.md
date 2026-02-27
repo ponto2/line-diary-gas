@@ -9,7 +9,7 @@ Google Gemini API を活用し、送信内容から「タイトル」「気分�
 
 ### 📝 日記記録
 * **Notion自動同期:** LINEのメッセージ（テキスト・画像）をNotionのデータベースに自動で蓄積。
-* **AI解析 (Gemini):** 日記の本文や画像をAIが解析し、適切な「タイトル」「気分アイコン」「タグ」を自動で付与。モデルはフォールバック対応（`gemini-2.5-flash` → `gemini-2.5-flash-lite`）。
+* **AI解析 (Gemini):** 日記の本文や画像をAIが解析し、適切な「タイトル」「気分アイコン」「タグ」を自動で付与。モデルはフォールバック対応（`gemini-3-flash-preview` → `gemini-2.5-flash` → `gemini-2.5-flash-lite`）。
 * **画像管理:** 送信された写真はGoogle Driveに保存され、Notionには閲覧用のDriveリンクが自動記載されます。
 * **Flex Message応答:** 記録成功時にタイトル・ムード・タグをカード形式で返信。
 

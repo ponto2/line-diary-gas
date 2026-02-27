@@ -1051,8 +1051,9 @@ function updateStreakCache() {
     // 昨日も記録あり → streak継続
     PROPS.setProperty('STREAK_COUNT', String(streakCount + 1));
   } else {
-    // 途切れた or 初回 → streakリセット
+    // 途切れた or 初回 → streakリセット、開始日を今日に
     PROPS.setProperty('STREAK_COUNT', '1');
+    PROPS.setProperty('STREAK_START_DATE', todayKey);
   }
 
   PROPS.setProperty('STREAK_LAST_DATE', todayKey);
@@ -1139,10 +1140,16 @@ function initStreakCache() {
     if (streakBroken) {
       // 途切れた → 確定
       const lastDate = recordedDates.has(todayKey) ? todayKey : formatDateKey(new Date(today.getTime() - 86400000));
+      // 開始日 = 今日からstreak日数分遡った日
+      const startDate = new Date(today);
+      if (!recordedDates.has(todayKey)) startDate.setDate(startDate.getDate() - 1);
+      startDate.setDate(startDate.getDate() - (streak - 1));
+      const startDateKey = formatDateKey(startDate);
       PROPS.setProperty('STREAK_COUNT', String(streak));
       PROPS.setProperty('STREAK_LAST_DATE', lastDate);
+      PROPS.setProperty('STREAK_START_DATE', startDateKey);
       PROPS.setProperty('STREAK_TOTAL_DAYS', String(recordedDates.size));
-      return { streak: streak, totalDays: recordedDates.size, hasTodayRecord: recordedDates.has(todayKey) };
+      return { streak: streak, totalDays: recordedDates.size, hasTodayRecord: recordedDates.has(todayKey), startDate: startDateKey };
     }
 
     // 次のウィンドウへ（さらに過去へ）
@@ -1161,10 +1168,15 @@ function initStreakCache() {
   }
 
   const lastDate = recordedDates.has(todayKey) ? todayKey : formatDateKey(new Date(today.getTime() - 86400000));
+  const startDate = new Date(today);
+  if (!recordedDates.has(todayKey)) startDate.setDate(startDate.getDate() - 1);
+  startDate.setDate(startDate.getDate() - (streak - 1));
+  const startDateKey = formatDateKey(startDate);
   PROPS.setProperty('STREAK_COUNT', String(streak));
   PROPS.setProperty('STREAK_LAST_DATE', lastDate);
+  PROPS.setProperty('STREAK_START_DATE', startDateKey);
   PROPS.setProperty('STREAK_TOTAL_DAYS', String(recordedDates.size));
-  return { streak: streak, totalDays: recordedDates.size, hasTodayRecord: recordedDates.has(todayKey) };
+  return { streak: streak, totalDays: recordedDates.size, hasTodayRecord: recordedDates.has(todayKey), startDate: startDateKey };
 }
 
 /**
@@ -1179,16 +1191,13 @@ function handleStreakCommand(replyToken) {
 
     let streakCount = PROPS.getProperty('STREAK_COUNT');
     let lastDate = PROPS.getProperty('STREAK_LAST_DATE');
-    let totalDays = parseInt(PROPS.getProperty('STREAK_TOTAL_DAYS') || '0', 10);
+    let startDate = PROPS.getProperty('STREAK_START_DATE') || '';
 
     // キャッシュが未初期化の場合、フル計算
     if (streakCount === null || lastDate === null) {
       const result = initStreakCache();
-      streakCount = result.streak;
-      totalDays = result.totalDays;
-      const hasTodayRecord = result.hasTodayRecord;
-      const flexContent = buildStreakFlex(streakCount, totalDays, hasTodayRecord);
-      replyFlexMessage(replyToken, `🔥 連続${streakCount}日`, flexContent, buildCommandQuickReply());
+      const flexContent = buildStreakFlex(result.streak, result.startDate);
+      replyFlexMessage(replyToken, `🔥 連続${result.streak}日`, flexContent, buildCommandQuickReply());
       return;
     }
 
@@ -1196,23 +1205,17 @@ function handleStreakCommand(replyToken) {
 
     // キャッシュから現在のstreakを算出
     let currentStreak;
-    let hasTodayRecord;
 
-    if (lastDate === todayKey) {
-      // 今日記録済み → キャッシュそのまま
+    if (lastDate === todayKey || lastDate === yesterdayKey) {
+      // 今日 or 昨日が最後 → streak継続中
       currentStreak = streakCount;
-      hasTodayRecord = true;
-    } else if (lastDate === yesterdayKey) {
-      // 昨日が最後 → streak継続中、今日はまだ
-      currentStreak = streakCount;
-      hasTodayRecord = false;
     } else {
       // 2日以上前 → streak途切れ
       currentStreak = 0;
-      hasTodayRecord = false;
+      startDate = '';
     }
 
-    const flexContent = buildStreakFlex(currentStreak, totalDays, hasTodayRecord);
+    const flexContent = buildStreakFlex(currentStreak, startDate);
     replyFlexMessage(replyToken, `🔥 連続${currentStreak}日`, flexContent, buildCommandQuickReply());
   } catch (e) {
     console.error("streakコマンドエラー:", e);
@@ -1423,12 +1426,32 @@ function buildYesterdayFlex(logs) {
 
 /**
  * /streak 連続記録のFlex Message
+ * @param {number} streak - 連続日数
+ * @param {string} startDateKey - 開始日 (YYYY-MM-DD形式)
  */
-function buildStreakFlex(streak, totalDays, hasTodayRecord) {
+function buildStreakFlex(streak, startDateKey) {
+  // マイルストーン定義
+  var milestones = [7, 14, 30, 50, 100, 200, 365, 500, 730, 1000];
+
+  // 現在のstreakがマイルストーン達成中か判定
+  var isOnMilestone = milestones.indexOf(streak) !== -1;
+
   var emoji, message;
   if (streak === 0) {
     emoji = "✍";
     message = "今日から始めましょう！";
+  } else if (isOnMilestone) {
+    // マイルストーン達成時の特別メッセージ
+    if (streak === 7) { emoji = "🎉"; message = "1週間達成！素晴らしいスタート！"; }
+    else if (streak === 14) { emoji = "🎊"; message = "2週間達成！習慣が根付いてきました！"; }
+    else if (streak === 30) { emoji = "🏅"; message = "1ヶ月達成！立派な習慣です！"; }
+    else if (streak === 50) { emoji = "🌟"; message = "50日達成！半端ない継続力！"; }
+    else if (streak === 100) { emoji = "💯"; message = "100日達成！圧倒的な意志力！"; }
+    else if (streak === 200) { emoji = "👑"; message = "200日達成！記録の達人！"; }
+    else if (streak === 365) { emoji = "🎆"; message = "1年達成！伝説の始まりです！"; }
+    else if (streak === 500) { emoji = "🏆"; message = "500日達成！もはや生活の一部！"; }
+    else if (streak === 730) { emoji = "💎"; message = "2年達成！揺るぎない日課！"; }
+    else { emoji = "🏆"; message = "驚異的なマイルストーン達成！"; }
   } else if (streak < 3) {
     emoji = "🌱";
     message = "良いスタートです！";
@@ -1446,7 +1469,37 @@ function buildStreakFlex(streak, totalDays, hasTodayRecord) {
     message = "伝説級の継続力！";
   }
 
-  var todayStatus = hasTodayRecord ? "記録済み ✅" : "まだ ⏳";
+  // 開始日の表示テキスト ("1/23" or "2025/1/23" 形式)
+  var startDateText = "—";
+  if (startDateKey && streak > 0) {
+    var parts = startDateKey.split('-');
+    var startYear = parseInt(parts[0], 10);
+    var startMonth = parseInt(parts[1], 10);
+    var startDay = parseInt(parts[2], 10);
+    var currentYear = new Date().getFullYear();
+    if (startYear !== currentYear) {
+      startDateText = startYear + "/" + startMonth + "/" + startDay;
+    } else {
+      startDateText = startMonth + "/" + startDay;
+    }
+  }
+
+  // 次のマイルストーンを計算
+  var milestoneText = "—";
+  if (streak > 0) {
+    var nextMilestone = null;
+    for (var i = 0; i < milestones.length; i++) {
+      if (milestones[i] > streak) {
+        nextMilestone = milestones[i];
+        break;
+      }
+    }
+    if (nextMilestone) {
+      milestoneText = nextMilestone + "日まで あと" + (nextMilestone - streak) + "日";
+    } else {
+      milestoneText = "全マイルストーン達成！";
+    }
+  }
 
   return {
     type: "bubble",
@@ -1465,33 +1518,34 @@ function buildStreakFlex(streak, totalDays, hasTodayRecord) {
       type: "box",
       layout: "vertical",
       spacing: "lg",
-      alignItems: "center",
       contents: [
         { type: "text", text: streak + "日", size: "3xl", weight: "bold", align: "center", color: "#E65100" },
-        { type: "text", text: message, size: "sm", align: "center", color: "#666666" },
+        { type: "text", text: message, size: "sm", align: "center", color: "#666666", wrap: true },
         { type: "separator" },
         {
           type: "box",
-          layout: "horizontal",
-          spacing: "lg",
+          layout: "vertical",
+          spacing: "sm",
           contents: [
             {
               type: "box",
-              layout: "vertical",
+              layout: "horizontal",
+              justifyContent: "center",
+              spacing: "sm",
               contents: [
-                { type: "text", text: "総記録日数", size: "xs", color: "#999999", align: "center" },
-                { type: "text", text: totalDays + "日", size: "md", weight: "bold", align: "center" }
-              ],
-              flex: 1
+                { type: "text", text: "開始日", size: "xs", color: "#999999", flex: 0, gravity: "center" },
+                { type: "text", text: startDateText, size: "sm", weight: "bold", flex: 0 }
+              ]
             },
             {
               type: "box",
-              layout: "vertical",
+              layout: "horizontal",
+              justifyContent: "center",
+              spacing: "sm",
               contents: [
-                { type: "text", text: "今日", size: "xs", color: "#999999", align: "center" },
-                { type: "text", text: todayStatus, size: "sm", weight: "bold", align: "center", wrap: true }
-              ],
-              flex: 1
+                { type: "text", text: "次の節目", size: "xs", color: "#999999", flex: 0, gravity: "center" },
+                { type: "text", text: milestoneText, size: "sm", weight: "bold", flex: 0 }
+              ]
             }
           ]
         }

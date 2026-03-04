@@ -2,7 +2,7 @@
   "name": "line-diary-gas",
   "version": "1.0.0",
   "description": "LINEで送ったメッセージや写真を、自動でNotionデータベースにライフログとして記録するGoogle Apps Script (GAS) 製のボットです。\r Google Gemini API を活用し、送信内容から「タイトル」「気分」「タグ」を自動生成してデータベースに整理します。",
-  "main": "コード.js",
+  "main": "main.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },

@@ -252,7 +252,7 @@ function handleOnThisDayCommand(replyToken) {
     let messages = [];
 
     // 1年前〜5年前
-    for (let i = 1; i <= 5; i++) {
+    for (let i = 1; i <= LIMITS.ONTHISDAY_YEARS; i++) {
       const targetYear = today.getFullYear() - i;
       const targetDate = new Date(targetYear, month, date);
       const logs = fetchLogsByDate(targetDate);
@@ -301,15 +301,15 @@ function handleRandomCommand(replyToken) {
     const details = fetchRandomLog();
 
     if (!details) {
-      replyLineMessage(replyToken, "\ud83c\udfb2 \u904e\u53bb\u306e\u8a18\u9332\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3067\u3057\u305f\u3002\u307e\u305a\u306f\u65e5\u8a18\u3092\u66f8\u3044\u3066\u307f\u307e\u3057\u3087\u3046\uff01", buildCommandQuickReply());
+      replyLineMessage(replyToken, "🎲 過去の記録が見つかりませんでした。まずは日記を書いてみましょう！", buildCommandQuickReply());
       return;
     }
 
-    const label = `\ud83c\udfb2 ${details.date} \u306e\u8a18\u9332`;
-    replyFlexMessage(replyToken, label, buildPastLogFlex(details, "\ud83c\udfb2 \u65e5\u8a18\u30ac\u30c1\u30e3"), buildCommandQuickReply());
+    const label = `🎲 ${details.date} の記録`;
+    replyFlexMessage(replyToken, label, buildPastLogFlex(details, "🎲 日記ガチャ"), buildCommandQuickReply());
 
   } catch (e) {
     console.error("random command error:", e);
-    replyLineMessage(replyToken, "\u26a0\ufe0f \u30a8\u30e9\u30fc\u304c\u767a\u751f\u3057\u307e\u3057\u305f: " + e.message, buildCommandQuickReply());
+    replyLineMessage(replyToken, "⚠️ エラーが発生しました: " + e.message, buildCommandQuickReply());
   }
 }

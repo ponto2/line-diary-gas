@@ -4,7 +4,7 @@
 
 function saveToNotion(data, bodyText, imageUrl) {
   const url = 'https://api.notion.com/v1/pages';
-  const safeBody = (bodyText || "").substring(0, 2000);
+  const safeBody = (bodyText || "").substring(0, LIMITS.NOTION_BODY_MAX);
 
   // ブロック作成
   const childrenBlocks = [
@@ -17,7 +17,6 @@ function saveToNotion(data, bodyText, imageUrl) {
 
   // 画像がある場合、安全なリンクを追加
   if (imageUrl) {
-    // テキストリンク (クリックしやすい)
     childrenBlocks.push({
       object: 'block',
       type: 'paragraph',
@@ -28,7 +27,7 @@ function saveToNotion(data, bodyText, imageUrl) {
             type: 'text',
             text: {
               content: "写真を開く (Google Drive)",
-              link: { url: imageUrl } // ハイパーリンク
+              link: { url: imageUrl }
             }
           }
         ]
@@ -63,13 +62,13 @@ function saveToNotion(data, bodyText, imageUrl) {
 }
 
 /**
- * 2. Notionからデータ取得
+ * 過去7日間のログを取得（週次レビュー用、本文付き・ページネーション対応）
  */
 function fetchWeeklyLogsFromNotion() {
   const url = `https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`;
   const date = new Date();
-  date.setHours(0, 0, 0, 0); // 当日の00:00:00にリセット
-  date.setDate(date.getDate() - 6); // 6日前の00:00:00
+  date.setHours(0, 0, 0, 0);
+  date.setDate(date.getDate() - 6);
   const isoDate = date.toISOString();
 
   const basePayload = {
@@ -126,63 +125,35 @@ function fetchWeeklyLogsFromNotion() {
 }
 
 /**
- * 2-c. 今日のログを取得 (Notion)
+ * 今日のログを取得
  */
 function fetchTodayLogsFromNotion() {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const isoDate = today.toISOString();
-
-  const url = `https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`;
-  const response = UrlFetchApp.fetch(url, {
-    method: 'post',
-    headers: {
-      'Authorization': `Bearer ${NOTION_TOKEN}`,
-      'Content-Type': 'application/json',
-      'Notion-Version': '2022-06-28'
-    },
-    payload: JSON.stringify({
-      filter: {
-        timestamp: "created_time",
-        created_time: { on_or_after: isoDate }
-      },
-      sorts: [{ timestamp: "created_time", direction: "ascending" }]
-    }),
-    muteHttpExceptions: true
-  });
-
-  if (response.getResponseCode() !== 200) {
-    throw new Error(`Notionデータ取得エラー: ${response.getContentText()}`);
-  }
-
-  const data = JSON.parse(response.getContentText());
-  const results = data.results || [];
-
-  return results.map(page => {
-    const props = page.properties;
-    const tags = (props["Tags"]?.multi_select || []).map(t => t.name);
-    const time = new Date(page.created_time);
-    return {
-      time: `${time.getHours()}:${String(time.getMinutes()).padStart(2, '0')}`,
-      title: props["Name"]?.title?.[0]?.plain_text || "無題",
-      mood: props["Mood"]?.select?.name || "😐",
-      tags: tags
-    };
-  });
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  return fetchLogsByDateRange(today, tomorrow, false);
 }
 
 /**
- * 2-d. 昨日のログを取得 (Notion)
+ * 昨日のログを取得
  */
 function fetchYesterdayLogsFromNotion() {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const yesterday = new Date(today);
   yesterday.setDate(today.getDate() - 1);
+  return fetchLogsByDateRange(yesterday, today, false);
+}
 
-  const isoStart = yesterday.toISOString();
-  const isoEnd = today.toISOString();
-
+/**
+ * 指定した日付範囲のログを取得する共通関数
+ * @param {Date} start - 開始日（以上）
+ * @param {Date} end - 終了日（未満）
+ * @param {boolean} includeBody - 本文を取得するか
+ * @returns {Array<DiaryLog>} ログ配列
+ */
+function fetchLogsByDateRange(start, end, includeBody) {
   const url = `https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`;
   const response = UrlFetchApp.fetch(url, {
     method: 'post',
@@ -194,8 +165,8 @@ function fetchYesterdayLogsFromNotion() {
     payload: JSON.stringify({
       filter: {
         and: [
-          { timestamp: "created_time", created_time: { on_or_after: isoStart } },
-          { timestamp: "created_time", created_time: { before: isoEnd } }
+          { timestamp: "created_time", created_time: { on_or_after: start.toISOString() } },
+          { timestamp: "created_time", created_time: { before: end.toISOString() } }
         ]
       },
       sorts: [{ timestamp: "created_time", direction: "ascending" }]
@@ -204,7 +175,7 @@ function fetchYesterdayLogsFromNotion() {
   });
 
   if (response.getResponseCode() !== 200) {
-    throw new Error(`Notionデータ取得エラー: ${response.getContentText()}`);
+    throw new Error(`Notionデータ取得エラー: ${response.getContentText().substring(0, 200)}`);
   }
 
   const data = JSON.parse(response.getContentText());
@@ -214,17 +185,22 @@ function fetchYesterdayLogsFromNotion() {
     const props = page.properties;
     const tags = (props["Tags"]?.multi_select || []).map(t => t.name);
     const time = new Date(page.created_time);
-    return {
+    const log = {
+      date: time.toLocaleDateString("ja-JP"),
       time: `${time.getHours()}:${String(time.getMinutes()).padStart(2, '0')}`,
       title: props["Name"]?.title?.[0]?.plain_text || "無題",
       mood: props["Mood"]?.select?.name || "😐",
       tags: tags
     };
+    if (includeBody) {
+      log.body = fetchPageBodyText(page.id);
+    }
+    return log;
   });
 }
 
 /**
- * 2-b. Notionページの本文テキストを取得
+ * Notionページの本文テキストを取得
  */
 function fetchPageBodyText(pageId) {
   const url = `https://api.notion.com/v1/blocks/${pageId}/children`;

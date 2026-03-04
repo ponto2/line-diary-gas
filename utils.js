@@ -14,35 +14,43 @@ function formatDateKey(d) {
  * PropertiesServiceのみ使用（Notion APIコール0回）
  */
 function updateStreakCache() {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const todayKey = formatDateKey(today);
+  // 並行実行によるカウント不整合を防止
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return;
 
-  const streakCount = parseInt(PROPS.getProperty('STREAK_COUNT') || '0', 10);
-  const lastDate = PROPS.getProperty('STREAK_LAST_DATE') || '';
-  const totalDays = parseInt(PROPS.getProperty('STREAK_TOTAL_DAYS') || '0', 10);
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayKey = formatDateKey(today);
 
-  if (lastDate === todayKey) {
-    // 同日2回目以降の記録 → 何もしない
-    return;
+    const streakCount = parseInt(PROPS.getProperty('STREAK_COUNT') || '0', 10);
+    const lastDate = PROPS.getProperty('STREAK_LAST_DATE') || '';
+    const totalDays = parseInt(PROPS.getProperty('STREAK_TOTAL_DAYS') || '0', 10);
+
+    if (lastDate === todayKey) {
+      // 同日2回目以降の記録 → 何もしない
+      return;
+    }
+
+    // 昨日の日付を計算
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayKey = formatDateKey(yesterday);
+
+    if (lastDate === yesterdayKey) {
+      // 昨日も記録あり → streak継続
+      PROPS.setProperty('STREAK_COUNT', String(streakCount + 1));
+    } else {
+      // 途切れた or 初回 → streakリセット、開始日を今日に
+      PROPS.setProperty('STREAK_COUNT', '1');
+      PROPS.setProperty('STREAK_START_DATE', todayKey);
+    }
+
+    PROPS.setProperty('STREAK_LAST_DATE', todayKey);
+    PROPS.setProperty('STREAK_TOTAL_DAYS', String(totalDays + 1));
+  } finally {
+    lock.releaseLock();
   }
-
-  // 昨日の日付を計算
-  const yesterday = new Date(today);
-  yesterday.setDate(yesterday.getDate() - 1);
-  const yesterdayKey = formatDateKey(yesterday);
-
-  if (lastDate === yesterdayKey) {
-    // 昨日も記録あり → streak継続
-    PROPS.setProperty('STREAK_COUNT', String(streakCount + 1));
-  } else {
-    // 途切れた or 初回 → streakリセット、開始日を今日に
-    PROPS.setProperty('STREAK_COUNT', '1');
-    PROPS.setProperty('STREAK_START_DATE', todayKey);
-  }
-
-  PROPS.setProperty('STREAK_LAST_DATE', todayKey);
-  PROPS.setProperty('STREAK_TOTAL_DAYS', String(totalDays + 1));
 }
 
 /**
@@ -165,13 +173,16 @@ function initStreakCache() {
 }
 
 /**
- * Notion APIへのリクエスト共通ヘルパー
+ * Notion APIへのリクエスト共通ヘルパー（リトライ付き）
+ * Rate Limit (429) 時は Exponential Backoff で自動リトライする
  * @param {string} endpoint - APIエンドポイント（フルURLまたはパス）
  * @param {Object} [options] - { method, payload }
+ * @param {number} [maxRetries=3] - 最大リトライ回数
  * @returns {Object} パース済みレスポンス
- * @throws {Error} HTTPエラー時
+ * @throws {Error} HTTPエラー時（リトライ超過含む）
  */
-function fetchNotionAPI(endpoint, options) {
+function fetchNotionAPI(endpoint, options, maxRetries) {
+  maxRetries = maxRetries || 3;
   const url = endpoint.startsWith('http') ? endpoint : `https://api.notion.com${endpoint}`;
   const method = (options && options.method) || 'post';
   const fetchOptions = {
@@ -185,12 +196,24 @@ function fetchNotionAPI(endpoint, options) {
   };
   if (options && options.payload) fetchOptions.payload = JSON.stringify(options.payload);
 
-  const response = UrlFetchApp.fetch(url, fetchOptions);
-  const code = response.getResponseCode();
-  if (code !== 200) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const response = UrlFetchApp.fetch(url, fetchOptions);
+    const code = response.getResponseCode();
+
+    if (code === 200) {
+      return JSON.parse(response.getContentText());
+    }
+
+    // Rate Limit: リトライ（最終試行以外）
+    if (code === 429 && attempt < maxRetries) {
+      const waitMs = 1000 * Math.pow(2, attempt); // 1s, 2s, 4s
+      console.warn(`Notion Rate Limit (429): ${waitMs}ms後にリトライ (${attempt + 1}/${maxRetries})`);
+      Utilities.sleep(waitMs);
+      continue;
+    }
+
     throw new Error(`Notion API Error (${code}): ${response.getContentText().substring(0, 200)}`);
   }
-  return JSON.parse(response.getContentText());
 }
 
 /**
@@ -200,9 +223,9 @@ function fetchNotionAPI(endpoint, options) {
  * @returns {string}
  */
 function truncateForLine(text, limit) {
-  limit = limit || 5000;
+  limit = limit || LIMITS.LINE_TEXT_MAX;
   if (text.length <= limit) return text;
-  return text.substring(0, limit - 20) + "\n\n\u2026\uff08\u4ee5\u4e0b\u7701\u7565\uff09";
+  return text.substring(0, limit - 20) + "\n\n…（以下省略）";
 }
 
 /**
@@ -236,17 +259,17 @@ function validateRequiredProps() {
  */
 function saveLastReview(text) {
   // 長すぎる場合は切り詰め（PropertiesServiceの制限: 1値9KB）
-  const safeText = (text || "").substring(0, 2000);
+  const safeText = (text || "").substring(0, LIMITS.PROPERTY_VALUE_MAX);
   PROPS.setProperty('LAST_WEEKLY_REVIEW', safeText);
 
   // 月次レビュー用: 直近5件の週次レビューを蓄積
   const history = JSON.parse(PROPS.getProperty('WEEKLY_REVIEW_HISTORY') || '[]');
   history.push({
     date: new Date().toLocaleDateString("ja-JP"),
-    text: (text || "").substring(0, 1500)
+    text: (text || "").substring(0, LIMITS.REVIEW_TEXT_MAX)
   });
-  // 直近5件のみ保持
-  while (history.length > 5) history.shift();
+  // 直近N件のみ保持
+  while (history.length > LIMITS.REVIEW_HISTORY_MAX) history.shift();
   PROPS.setProperty('WEEKLY_REVIEW_HISTORY', JSON.stringify(history));
 }
 
@@ -283,7 +306,7 @@ function filterReviewsByMonth(reviews, monthStart, monthEnd) {
  * 前回の月次レビューを保存
  */
 function saveLastMonthlyReview(text) {
-  const safeText = (text || "").substring(0, 2000);
+  const safeText = (text || "").substring(0, LIMITS.PROPERTY_VALUE_MAX);
   PROPS.setProperty('LAST_MONTHLY_REVIEW', safeText);
 }
 
@@ -350,33 +373,23 @@ function getDiaryStartDate() {
   const cached = PROPS.getProperty('DIARY_START_DATE');
   if (cached) return cached;
 
-  const url = `https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`;
-  const response = UrlFetchApp.fetch(url, {
-    method: 'post',
-    headers: {
-      'Authorization': `Bearer ${NOTION_TOKEN}`,
-      'Content-Type': 'application/json',
-      'Notion-Version': '2022-06-28'
-    },
-    payload: JSON.stringify({
-      sorts: [{ timestamp: "created_time", direction: "ascending" }],
-      page_size: 1
-    }),
-    muteHttpExceptions: true
-  });
+  try {
+    const data = fetchNotionAPI(`/v1/databases/${NOTION_DB_ID}/query`, {
+      payload: {
+        sorts: [{ timestamp: "created_time", direction: "ascending" }],
+        page_size: 1
+      }
+    });
 
-  const code = response.getResponseCode();
-  if (code !== 200) {
-    console.error(`DIARY_START_DATE取得エラー (${code}): ${response.getContentText().substring(0, 200)}`);
+    if (!data.results || data.results.length === 0) return null;
+
+    const startDate = data.results[0].created_time;
+    PROPS.setProperty('DIARY_START_DATE', startDate);
+    return startDate;
+  } catch (e) {
+    console.error("DIARY_START_DATE取得エラー:", e.message);
     return null;
   }
-
-  const data = JSON.parse(response.getContentText());
-  if (!data.results || data.results.length === 0) return null;
-
-  const startDate = data.results[0].created_time;
-  PROPS.setProperty('DIARY_START_DATE', startDate);
-  return startDate;
 }
 
 /**
@@ -421,112 +434,37 @@ function fetchRandomLog() {
  * @returns {Object|null} Notionページオブジェクト、なければnull
  */
 function queryNotionByTimestamp(timestamp, condition, direction) {
-  const url = `https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`;
-  const filter = { timestamp: "created_time", created_time: {} };
-  filter.created_time[condition] = timestamp;
+  try {
+    const filter = { timestamp: "created_time", created_time: {} };
+    filter.created_time[condition] = timestamp;
 
-  const response = UrlFetchApp.fetch(url, {
-    method: 'post',
-    headers: {
-      'Authorization': `Bearer ${NOTION_TOKEN}`,
-      'Content-Type': 'application/json',
-      'Notion-Version': '2022-06-28'
-    },
-    payload: JSON.stringify({
-      filter: filter,
-      sorts: [{ timestamp: "created_time", direction: direction }],
-      page_size: 1
-    }),
-    muteHttpExceptions: true
-  });
-
-  const code = response.getResponseCode();
-  if (code !== 200) {
-    console.error(`Notionランダムクエリエラー (${code}): ${response.getContentText().substring(0, 200)}`);
+    const data = fetchNotionAPI(`/v1/databases/${NOTION_DB_ID}/query`, {
+      payload: {
+        filter: filter,
+        sorts: [{ timestamp: "created_time", direction: direction }],
+        page_size: 1
+      }
+    });
+    return (data.results && data.results.length > 0) ? data.results[0] : null;
+  } catch (e) {
+    console.error("Notionランダムクエリエラー:", e.message);
     return null;
   }
-
-  const data = JSON.parse(response.getContentText());
-  return (data.results && data.results.length > 0) ? data.results[0] : null;
 }
 
 /**
  * 指定IDのログ詳細を取得
+ * @param {string} pageId - NotionページID
+ * @returns {DiaryLog|null} ログ詳細、取得失敗時はnull
  */
 function fetchLogDetails(pageId) {
-  const url = `https://api.notion.com/v1/pages/${pageId}`;
-  const response = UrlFetchApp.fetch(url, {
-    method: 'get',
-    headers: {
-      'Authorization': `Bearer ${NOTION_TOKEN}`,
-      'Notion-Version': '2022-06-28'
-    },
-    muteHttpExceptions: true
-  });
-
-  if (response.getResponseCode() !== 200) return null;
-
-  const page = JSON.parse(response.getContentText());
-  const props = page.properties;
-  const tags = (props["Tags"]?.multi_select || []).map(t => t.name);
-  const body = fetchPageBodyText(page.id); // 本文も取得
-  const d = new Date(page.created_time);
-
-  return {
-    date: d.toLocaleDateString("ja-JP"),
-    time: `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`,
-    title: props["Name"]?.title?.[0]?.plain_text || "無題",
-    mood: props["Mood"]?.select?.name || "😐",
-    tags: tags,
-    body: body
-  };
-}
-
-
-/**
- * 指定した日付（1日分）のログを取得
- * @param {Date} targetDate
- * @returns {Array} ログ配列
- */
-function fetchLogsByDate(targetDate) {
-  const start = new Date(targetDate);
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(targetDate);
-  end.setHours(23, 59, 59, 999);
-
-  const url = `https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`;
-  const payload = {
-    filter: {
-      and: [
-        { timestamp: "created_time", created_time: { on_or_after: start.toISOString() } },
-        { timestamp: "created_time", created_time: { on_or_before: end.toISOString() } }
-      ]
-    }
-  };
-
-  // エラーハンドリングは呼び出し元で行う前提
-  const response = UrlFetchApp.fetch(url, {
-    method: 'post',
-    headers: {
-      'Authorization': `Bearer ${NOTION_TOKEN}`,
-      'Content-Type': 'application/json',
-      'Notion-Version': '2022-06-28'
-    },
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  });
-
-  if (response.getResponseCode() !== 200) {
-    console.error(`Notion data fetch error (${targetDate}): ${response.getContentText()}`);
-    return [];
-  }
-
-  const data = JSON.parse(response.getContentText());
-  return (data.results || []).map(page => {
+  try {
+    const page = fetchNotionAPI(`/v1/pages/${pageId}`, { method: 'get' });
     const props = page.properties;
     const tags = (props["Tags"]?.multi_select || []).map(t => t.name);
-    const body = fetchPageBodyText(page.id); // 本文も取得
+    const body = fetchPageBodyText(page.id);
     const d = new Date(page.created_time);
+
     return {
       date: d.toLocaleDateString("ja-JP"),
       time: `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`,
@@ -535,5 +473,22 @@ function fetchLogsByDate(targetDate) {
       tags: tags,
       body: body
     };
-  });
+  } catch (e) {
+    console.error(`ログ詳細取得エラー (${pageId}):`, e.message);
+    return null;
+  }
+}
+
+
+/**
+ * 指定した日付（1日分）のログを取得
+ * @param {Date} targetDate
+ * @returns {Array<DiaryLog>} ログ配列（本文付き）
+ */
+function fetchLogsByDate(targetDate) {
+  const start = new Date(targetDate);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  return fetchLogsByDateRange(start, end, true);
 }

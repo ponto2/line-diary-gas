@@ -22,6 +22,25 @@
  * ============================================================
  */
 
+/**
+ * 日記ログの共通型定義
+ * @typedef {Object} DiaryLog
+ * @property {string} date - "2026/3/4" 形式の日付
+ * @property {string} time - "14:30" 形式の時刻
+ * @property {string} title - 日記タイトル
+ * @property {string} mood - ムード絵文字
+ * @property {string[]} tags - タグ配列
+ * @property {string} [body] - 本文（省略可能）
+ */
+
+/**
+ * Gemini解析結果の型定義
+ * @typedef {Object} AnalysisResult
+ * @property {string} title - 日記タイトル
+ * @property {string} mood - ムード絵文字
+ * @property {string[]} tags - タグ配列
+ */
+
 const PROPS = PropertiesService.getScriptProperties();
 
 const LINE_TOKEN = PROPS.getProperty('LINE_TOKEN');
@@ -36,8 +55,29 @@ const MOODS = ["🤩", "😊", "😐", "😰", "😡"];
 /** Gemini APIモデル候補（優先順） */
 const MODEL_CANDIDATES = ["gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
 
+/** システム共通の制限値 */
+const LIMITS = {
+  /** Notion本文の最大文字数 */
+  NOTION_BODY_MAX: 2000,
+  /** LINE テキストメッセージの最大文字数 */
+  LINE_TEXT_MAX: 5000,
+  /** 週次レビュー蓄積の保持件数 */
+  REVIEW_HISTORY_MAX: 5,
+  /** 蓄積する週次レビュー1件あたりの最大文字数 */
+  REVIEW_TEXT_MAX: 1500,
+  /** PropertiesService 1値あたりの安全な最大文字数 */
+  PROPERTY_VALUE_MAX: 2000,
+  /** /onthisday で遡る最大年数 */
+  ONTHISDAY_YEARS: 5,
+};
+
 function doPost(e) {
   if (!e?.postData) return ContentService.createTextOutput("error");
+
+  // 注意: Google Apps Scriptの仕様上、doPost(e)ではHTTPヘッダー（x-line-signature）を取得できません。
+  // そのため、純粋なGASのみではLINEの厳密なWebhook署名検証は実装不可能です。
+  // 簡易的なアクセス制限を行う場合は、Webhook URL末尾に自分だけのクエリパラメータ
+  // (?token=xxx) を付け、e.parameter.token で判定する回避策が一般的です。
 
   const missingKeys = validateRequiredProps();
   if (missingKeys.length > 0) {
@@ -63,12 +103,21 @@ function doPost(e) {
       }
       // B. 画像
       else if (msg.type === 'image') {
-        // 1. 画像をDriveに保存
-        const imageInfo = saveImageToDrive(msg.id);
-        const logText = `📷 写真をアップロードしました\n(${imageInfo.name})`;
+        // 画像保存に失敗してもテキスト記録は行うグレースフルデグラデーション
+        let imageInfo = null;
+        try {
+          imageInfo = saveImageToDrive(msg.id);
+        } catch (imgErr) {
+          console.error("画像保存失敗（テキストのみで記録を続行）:", imgErr);
+        }
 
-        // 2. 解析 & Notion保存
-        processContent(logText, imageInfo.url, imageInfo.blob, replyToken);
+        const logText = imageInfo
+          ? `📷 写真をアップロードしました\n(${imageInfo.name})`
+          : "📷 写真が送信されました（画像の保存に失敗しました）";
+        const imageUrl = imageInfo ? imageInfo.url : null;
+        const imageBlob = imageInfo ? imageInfo.blob : null;
+
+        processContent(logText, imageUrl, imageBlob, replyToken);
       }
     });
   } catch (err) {

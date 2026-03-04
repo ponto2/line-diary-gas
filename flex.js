@@ -83,58 +83,7 @@ function buildTodayFlex(logs) {
   const today = new Date();
   const dayNames = ['日', '月', '火', '水', '木', '金', '土'];
   const dateStr = (today.getMonth() + 1) + '/' + today.getDate() + '(' + dayNames[today.getDay()] + ')';
-
-  const logItems = logs.map(function (log) {
-    const tagText = log.tags.length > 0 ? log.tags.join(', ') : '';
-    const subText = [log.mood, tagText].filter(Boolean).join('  ');
-    return {
-      type: "box",
-      layout: "vertical",
-      spacing: "xs",
-      contents: [
-        {
-          type: "box",
-          layout: "horizontal",
-          spacing: "sm",
-          contents: [
-            { type: "text", text: log.time, size: "xs", color: "#999999", flex: 0 },
-            { type: "text", text: log.title, size: "sm", weight: "bold", wrap: true, flex: 1 }
-          ]
-        },
-        { type: "text", text: subText, size: "xs", color: "#666666", margin: "xs" }
-      ]
-    };
-  });
-
-  const bodyContents = [];
-  logItems.forEach(function (item, i) {
-    bodyContents.push(item);
-    if (i < logItems.length - 1) {
-      bodyContents.push({ type: "separator", margin: "md" });
-    }
-  });
-
-  return {
-    type: "bubble",
-    size: "kilo",
-    styles: {
-      header: { backgroundColor: "#1B5E20" }
-    },
-    header: {
-      type: "box",
-      layout: "horizontal",
-      contents: [
-        { type: "text", text: dateStr + " の記録", color: "#FFFFFF", size: "sm", weight: "bold", flex: 1 },
-        { type: "text", text: logs.length + "件", color: "#E8F5E9", size: "sm", align: "end", flex: 0 }
-      ]
-    },
-    body: {
-      type: "box",
-      layout: "vertical",
-      spacing: "md",
-      contents: bodyContents
-    }
-  };
+  return buildDayLogListFlex(logs, dateStr);
 }
 
 /**
@@ -145,7 +94,15 @@ function buildYesterdayFlex(logs) {
   yesterday.setDate(yesterday.getDate() - 1);
   const dayNames = ['日', '月', '火', '水', '木', '金', '土'];
   const dateStr = (yesterday.getMonth() + 1) + '/' + yesterday.getDate() + '(' + dayNames[yesterday.getDay()] + ')';
+  return buildDayLogListFlex(logs, dateStr);
+}
 
+/**
+ * 日別ログ一覧の共通Flex Messageビルダー
+ * @param {Array} logs - ログ配列
+ * @param {string} dateStr - 表示用の日付文字列（例: "3/4(火)"）
+ */
+function buildDayLogListFlex(logs, dateStr) {
   const logItems = logs.map(function (log) {
     const tagText = log.tags.length > 0 ? log.tags.join(', ') : '';
     const subText = [log.mood, tagText].filter(Boolean).join('  ');
@@ -325,240 +282,19 @@ function buildStreakFlex(streak, startDateKey) {
 }
 
 /**
- * /stats 統計カードのFlex Message
+ * /stats 統計カードのFlex Message（週次）
  */
 function buildStatsFlex(logs) {
-  const totalEntries = logs.length;
-
-  // ムード分布
-  const moodCounts = {};
-  logs.forEach(log => { moodCounts[log.mood] = (moodCounts[log.mood] || 0) + 1; });
-  const moodItems = Object.entries(moodCounts)
-    .sort((a, b) => b[1] - a[1])
-    .map(([mood, count]) => ({
-      type: "box",
-      layout: "horizontal",
-      contents: [
-        { type: "filler", flex: 1 },
-        { type: "text", text: mood, size: "md", flex: 2, align: "center", gravity: "center" },
-        {
-          type: "box",
-          layout: "horizontal",
-          flex: 2,
-          justifyContent: "center",
-          alignItems: "center",
-          contents: [
-            { type: "text", text: String(count), size: "sm", color: "#666666", flex: 0 },
-            { type: "text", text: "回", size: "sm", color: "#666666", flex: 0, margin: "xs" }
-          ]
-        },
-        { type: "filler", flex: 1 }
-      ]
-    }));
-
-  // タグ頻度
-  const tagCounts = {};
-  logs.forEach(log => { log.tags.forEach(tag => { tagCounts[tag] = (tagCounts[tag] || 0) + 1; }); });
-  const tagItems = Object.entries(tagCounts)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 5)
-    .map(([tag, count]) => ({
-      type: "box",
-      layout: "horizontal",
-      contents: [
-        { type: "filler", flex: 1 },
-        { type: "text", text: tag, size: "sm", flex: 2, align: "center", gravity: "center" },
-        {
-          type: "box",
-          layout: "horizontal",
-          flex: 2,
-          justifyContent: "center",
-          alignItems: "center",
-          contents: [
-            { type: "text", text: String(count), size: "sm", color: "#666666", flex: 0 },
-            { type: "text", text: "回", size: "sm", color: "#666666", flex: 0, margin: "xs" }
-          ]
-        },
-        { type: "filler", flex: 1 }
-      ]
-    }));
-
-  // 記録がある日数
-  const uniqueDays = new Set(logs.map(log => log.date)).size;
-
   const dayNames = ['日', '月', '火', '水', '木', '金', '土'];
   const now = new Date();
   const from = new Date();
   from.setDate(from.getDate() - 6);
   const dateRange = (from.getMonth() + 1) + "/" + from.getDate() + "(" + dayNames[from.getDay()] + ") ~ " + (now.getMonth() + 1) + "/" + now.getDate() + "(" + dayNames[now.getDay()] + ")";
 
-  return {
-    type: "bubble",
-    size: "kilo",
-    styles: {
-      header: { backgroundColor: "#0D47A1" }
-    },
-    header: {
-      type: "box",
-      layout: "vertical",
-      contents: [
-        { type: "text", text: "📊 " + dateRange + " の統計", color: "#FFFFFF", size: "sm", weight: "bold" }
-      ]
-    },
-    body: {
-      type: "box",
-      layout: "vertical",
-      spacing: "md",
-      contents: [
-        // 記録数サマリー
-        {
-          type: "box",
-          layout: "horizontal",
-          contents: [
-            {
-              type: "box",
-              layout: "vertical",
-              contents: [
-                { type: "text", text: String(totalEntries), size: "xxl", weight: "bold", align: "center", color: "#0D47A1" },
-                { type: "text", text: "記録数", size: "xs", align: "center", color: "#999999" }
-              ],
-              flex: 1
-            },
-            {
-              type: "box",
-              layout: "vertical",
-              contents: [
-                { type: "text", text: String(uniqueDays), size: "xxl", weight: "bold", align: "center", color: "#0D47A1" },
-                { type: "text", text: "日数", size: "xs", align: "center", color: "#999999" }
-              ],
-              flex: 1
-            }
-          ]
-        },
-        { type: "separator" },
-        // ムード分布 & タグ頻度 横並び
-        {
-          type: "box",
-          layout: "horizontal",
-          spacing: "md",
-          contents: [
-            {
-              type: "box",
-              layout: "vertical",
-              spacing: "xs",
-              flex: 1,
-              alignItems: "center",
-              contents: [
-                { type: "text", text: "ムード", size: "xs", weight: "bold", color: "#333333" },
-                ...moodItems
-              ]
-            },
-            { type: "separator" },
-            {
-              type: "box",
-              layout: "vertical",
-              spacing: "xs",
-              flex: 1,
-              alignItems: "center",
-              contents: [
-                { type: "text", text: "タグ TOP5", size: "xs", weight: "bold", color: "#333333" },
-                ...tagItems
-              ]
-            }
-          ]
-        }
-      ]
-    }
-  };
-}
-
-/**
- * /help コマンド一覧のFlex Message
- */
-function buildHelpFlex() {
-  const commands = [
-    { cmd: "/today", desc: "今日の記録一覧を表示" },
-    { cmd: "/yesterday", desc: "昨日の記録一覧を表示" },
-    { cmd: "/stats", desc: "直近7日間の統計を表示" },
-    { cmd: "/streak", desc: "連続記録日数を表示" },
-    { cmd: "/review", desc: "週次レビューを生成" },
-    { cmd: "/monthly", desc: "月次レビューを生成" },
-    { cmd: "/onthisday", desc: "過去の今日の記録を表示" },
-    { cmd: "/random", desc: "ランダムに日記を表示" },
-    { cmd: "/help", desc: "ヘルプを表示" }
-  ];
-
-  const cmdComponents = commands.map(c => ({
-    type: "box",
-    layout: "horizontal",
-    spacing: "md",
-    contents: [
-      {
-        type: "box",
-        layout: "vertical",
-        contents: [{ type: "text", text: c.cmd, size: "sm", weight: "bold", color: "#1B5E20" }],
-        flex: 2
-      },
-      {
-        type: "box",
-        layout: "vertical",
-        contents: [{ type: "text", text: c.desc, size: "sm", color: "#666666", wrap: true }],
-        flex: 4
-      }
-    ],
-    margin: "md"
-  }));
-
-  return {
-    type: "bubble",
-    size: "kilo",
-    styles: {
-      header: { backgroundColor: "#1B5E20" }
-    },
-    header: {
-      type: "box",
-      layout: "vertical",
-      contents: [
-        { type: "text", text: "📖 コマンド一覧", color: "#FFFFFF", size: "md", weight: "bold" }
-      ]
-    },
-    body: {
-      type: "box",
-      layout: "vertical",
-      spacing: "md",
-      contents: [
-        ...cmdComponents
-      ]
-    }
-  };
-}
-
-/**
- * 不明なコマンド時のFlex Message
- */
-function buildUnknownCommandFlex(cmd) {
-  return {
-    type: "bubble",
-    styles: {
-      header: { backgroundColor: "#E65100" }
-    },
-    header: {
-      type: "box",
-      layout: "vertical",
-      contents: [
-        { type: "text", text: "⚠️ 不明なコマンド", color: "#FFFFFF", size: "sm", weight: "bold" }
-      ]
-    },
-    body: {
-      type: "box",
-      layout: "vertical",
-      spacing: "md",
-      contents: [
-        { type: "text", text: `「${cmd}」は登録されていないコマンドです。`, size: "sm", wrap: true },
-        { type: "text", text: "/help で利用可能なコマンドを確認できます。", size: "sm", color: "#666666", wrap: true, margin: "md" }
-      ]
-    }
-  };
+  return buildStatsFlexCore(logs, {
+    headerText: "📊 " + dateRange + " の統計",
+    themeColor: "#0D47A1"
+  });
 }
 
 /**
@@ -568,7 +304,28 @@ function buildUnknownCommandFlex(cmd) {
  * @param {Date} monthEnd - 対象月の末日
  */
 function buildMonthlyStatsFlex(logs, monthStart, monthEnd) {
+  const dayNames = ['日', '月', '火', '水', '木', '金', '土'];
+  const dateRange = (monthStart.getMonth() + 1) + "/" + monthStart.getDate() + "(" + dayNames[monthStart.getDay()] + ") ~ " + (monthEnd.getMonth() + 1) + "/" + monthEnd.getDate() + "(" + dayNames[monthEnd.getDay()] + ")";
+  const daysInMonth = monthEnd.getDate();
+
+  return buildStatsFlexCore(logs, {
+    headerText: "📊 " + dateRange + " の月間統計",
+    themeColor: "#4A148C",
+    daysInMonth: daysInMonth
+  });
+}
+
+/**
+ * 統計カード共通ビルダー
+ * @param {Array} logs - ログ配列
+ * @param {Object} options
+ * @param {string} options.headerText - ヘッダーテキスト
+ * @param {string} options.themeColor - テーマカラー（HEX）
+ * @param {number} [options.daysInMonth] - 月の日数（指定時は記録率カラムを追加）
+ */
+function buildStatsFlexCore(logs, options) {
   const totalEntries = logs.length;
+  const themeColor = options.themeColor;
 
   // ムード分布
   const moodCounts = {};
@@ -626,25 +383,53 @@ function buildMonthlyStatsFlex(logs, monthStart, monthEnd) {
   // 記録がある日数
   const uniqueDays = new Set(logs.map(log => log.date)).size;
 
-  // カレンダー月の日付範囲を表示
-  const dayNames = ['日', '月', '火', '水', '木', '金', '土'];
-  const dateRange = (monthStart.getMonth() + 1) + "/" + monthStart.getDate() + "(" + dayNames[monthStart.getDay()] + ") ~ " + (monthEnd.getMonth() + 1) + "/" + monthEnd.getDate() + "(" + dayNames[monthEnd.getDay()] + ")";
+  // サマリーカラム（記録数 + 日数）
+  const summaryColumns = [
+    {
+      type: "box",
+      layout: "vertical",
+      contents: [
+        { type: "text", text: String(totalEntries), size: "xxl", weight: "bold", align: "center", color: themeColor },
+        { type: "text", text: "記録数", size: "xs", align: "center", color: "#999999" }
+      ],
+      flex: 1
+    },
+    {
+      type: "box",
+      layout: "vertical",
+      contents: [
+        { type: "text", text: String(uniqueDays), size: "xxl", weight: "bold", align: "center", color: themeColor },
+        { type: "text", text: "日数", size: "xs", align: "center", color: "#999999" }
+      ],
+      flex: 1
+    }
+  ];
 
-  // 記録率（対象月の実際の日数で計算）
-  const daysInMonth = monthEnd.getDate();
-  const recordRate = Math.round((uniqueDays / daysInMonth) * 100);
+  // 月次の場合は記録率カラムを追加
+  if (options.daysInMonth) {
+    const recordRate = Math.round((uniqueDays / options.daysInMonth) * 100);
+    summaryColumns.push({
+      type: "box",
+      layout: "vertical",
+      contents: [
+        { type: "text", text: recordRate + "%", size: "xxl", weight: "bold", align: "center", color: themeColor },
+        { type: "text", text: "記録率", size: "xs", align: "center", color: "#999999" }
+      ],
+      flex: 1
+    });
+  }
 
   return {
     type: "bubble",
     size: "kilo",
     styles: {
-      header: { backgroundColor: "#4A148C" }
+      header: { backgroundColor: themeColor }
     },
     header: {
       type: "box",
       layout: "vertical",
       contents: [
-        { type: "text", text: "📊 " + dateRange + " の月間統計", color: "#FFFFFF", size: "sm", weight: "bold" }
+        { type: "text", text: options.headerText, color: "#FFFFFF", size: "sm", weight: "bold" }
       ]
     },
     body: {
@@ -652,42 +437,12 @@ function buildMonthlyStatsFlex(logs, monthStart, monthEnd) {
       layout: "vertical",
       spacing: "md",
       contents: [
-        // 記録数サマリー（3カラム: 記録数・日数・記録率）
         {
           type: "box",
           layout: "horizontal",
-          contents: [
-            {
-              type: "box",
-              layout: "vertical",
-              contents: [
-                { type: "text", text: String(totalEntries), size: "xxl", weight: "bold", align: "center", color: "#4A148C" },
-                { type: "text", text: "記録数", size: "xs", align: "center", color: "#999999" }
-              ],
-              flex: 1
-            },
-            {
-              type: "box",
-              layout: "vertical",
-              contents: [
-                { type: "text", text: String(uniqueDays), size: "xxl", weight: "bold", align: "center", color: "#4A148C" },
-                { type: "text", text: "日数", size: "xs", align: "center", color: "#999999" }
-              ],
-              flex: 1
-            },
-            {
-              type: "box",
-              layout: "vertical",
-              contents: [
-                { type: "text", text: recordRate + "%", size: "xxl", weight: "bold", align: "center", color: "#4A148C" },
-                { type: "text", text: "記録率", size: "xs", align: "center", color: "#999999" }
-              ],
-              flex: 1
-            }
-          ]
+          contents: summaryColumns
         },
         { type: "separator" },
-        // ムード分布 & タグ頻度 横並び
         {
           type: "box",
           layout: "horizontal",

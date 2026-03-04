@@ -342,49 +342,112 @@ function buildLogStatistics(logs) {
 }
 
 /**
- * 全期間のログの日付とIDを取得（軽量版）
- * @returns {Array<{id: string, date: string}>}
+ * 日記記録の開始日を取得（キャッシュ付き）
+ * 初回はNotion APIで最古の1件を取得し、PropertiesServiceに保存
+ * @returns {string|null} ISO形式の日付文字列、記録がなければnull
  */
-function fetchAllLogDates() {
+function getDiaryStartDate() {
+  const cached = PROPS.getProperty('DIARY_START_DATE');
+  if (cached) return cached;
+
   const url = `https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`;
-  let allResults = [];
-  let hasMore = true;
-  let nextCursor = undefined;
+  const response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    headers: {
+      'Authorization': `Bearer ${NOTION_TOKEN}`,
+      'Content-Type': 'application/json',
+      'Notion-Version': '2022-06-28'
+    },
+    payload: JSON.stringify({
+      sorts: [{ timestamp: "created_time", direction: "ascending" }],
+      page_size: 1
+    }),
+    muteHttpExceptions: true
+  });
 
-  while (hasMore) {
-    const payload = {
-      sorts: [{ timestamp: "created_time", direction: "descending" }],
-      page_size: 100 // 最大取得数
-    };
-    if (nextCursor) payload.start_cursor = nextCursor;
-
-    const response = UrlFetchApp.fetch(url, {
-      method: 'post',
-      headers: {
-        'Authorization': `Bearer ${NOTION_TOKEN}`,
-        'Content-Type': 'application/json',
-        'Notion-Version': '2022-06-28'
-      },
-      payload: JSON.stringify(payload),
-      muteHttpExceptions: true
-    });
-
-    if (response.getResponseCode() !== 200) break;
-
-    const data = JSON.parse(response.getContentText());
-    if (data.results) {
-      data.results.forEach(page => {
-        allResults.push({
-          id: page.id,
-          date: new Date(page.created_time).toLocaleDateString("ja-JP")
-        });
-      });
-    }
-    hasMore = data.has_more;
-    nextCursor = data.next_cursor;
+  const code = response.getResponseCode();
+  if (code !== 200) {
+    console.error(`DIARY_START_DATE取得エラー (${code}): ${response.getContentText().substring(0, 200)}`);
+    return null;
   }
 
-  return allResults;
+  const data = JSON.parse(response.getContentText());
+  if (!data.results || data.results.length === 0) return null;
+
+  const startDate = data.results[0].created_time;
+  PROPS.setProperty('DIARY_START_DATE', startDate);
+  return startDate;
+}
+
+/**
+ * ランダムな過去の日記を1件取得（ランダムタイムスタンプ方式）
+ * DIARY_START_DATE〜昨日の範囲でランダムなタイムスタンプを生成し、
+ * その直後（または直前）のエントリを返す。APIコール: 2〜3回固定。
+ * @returns {Object|null} ログ詳細オブジェクト、見つからなければnull
+ */
+function fetchRandomLog() {
+  const startStr = getDiaryStartDate();
+  if (!startStr) return null;
+
+  const startMs = new Date(startStr).getTime();
+  const endDate = new Date();
+  endDate.setHours(0, 0, 0, 0); // 今日の00:00 = 昨日までを対象
+  const endMs = endDate.getTime();
+
+  if (endMs <= startMs) return null; // 今日が初日の場合
+
+  // ランダムなタイムスタンプを生成
+  const randomMs = startMs + Math.random() * (endMs - startMs);
+  const randomTs = new Date(randomMs).toISOString();
+
+  // 試行1: ランダムタイムスタンプ以降で最も近い1件
+  let page = queryNotionByTimestamp(randomTs, "on_or_after", "ascending");
+
+  // 試行2（フォールバック）: ランダムタイムスタンプ以前で最も近い1件
+  if (!page) {
+    page = queryNotionByTimestamp(randomTs, "before", "descending");
+  }
+
+  if (!page) return null;
+
+  return fetchLogDetails(page.id);
+}
+
+/**
+ * タイムスタンプ条件でNotionから1件取得するヘルパー
+ * @param {string} timestamp - ISO形式のタイムスタンプ
+ * @param {string} condition - "on_or_after" または "before"
+ * @param {string} direction - "ascending" または "descending"
+ * @returns {Object|null} Notionページオブジェクト、なければnull
+ */
+function queryNotionByTimestamp(timestamp, condition, direction) {
+  const url = `https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`;
+  const filter = { timestamp: "created_time", created_time: {} };
+  filter.created_time[condition] = timestamp;
+
+  const response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    headers: {
+      'Authorization': `Bearer ${NOTION_TOKEN}`,
+      'Content-Type': 'application/json',
+      'Notion-Version': '2022-06-28'
+    },
+    payload: JSON.stringify({
+      filter: filter,
+      sorts: [{ timestamp: "created_time", direction: direction }],
+      page_size: 1
+    }),
+    muteHttpExceptions: true
+  });
+
+  const code = response.getResponseCode();
+  if (code !== 200) {
+    console.error(`Notionランダムクエリエラー (${code}): ${response.getContentText().substring(0, 200)}`);
+    return null;
+  }
+
+  const data = JSON.parse(response.getContentText());
+  return (data.results && data.results.length > 0) ? data.results[0] : null;
 }
 
 /**

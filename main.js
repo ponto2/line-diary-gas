@@ -93,6 +93,10 @@ function processContent(text, imageUrl, imageBlob, replyToken) {
     saveToNotion(result.data, text, imageUrl);
     // streakキャッシュ更新（失敗しても日記記録には影響なし）
     try { updateStreakCache(); } catch (e) { console.error("streak cache update failed:", e); }
+    // /random用: 初回記録時に開始日を保存
+    if (!PROPS.getProperty('DIARY_START_DATE')) {
+      PROPS.setProperty('DIARY_START_DATE', new Date().toISOString());
+    }
     // Notion保存成功をFlex Messageで返信
     if (replyToken) {
       try {

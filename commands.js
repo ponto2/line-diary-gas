@@ -294,37 +294,22 @@ function handleOnThisDayCommand(replyToken) {
 
 /**
  * /random コマンド: ランダムな過去の日記を表示
+ * ランダムタイムスタンプ方式で効率的に1件取得（APIコール2〜3回）
  */
 function handleRandomCommand(replyToken) {
   try {
-    // 全期間からランダムに1件取得
-    // ※ランダム日付生成だと記録がない日にヒットする確率が高いため、
-    //   一度全件の日付リスト（ID含む）を取得してからランダムに選択する方式に変更
-    const allLogs = fetchAllLogDates();
+    const details = fetchRandomLog();
 
-    if (allLogs.length === 0) {
-      replyLineMessage(replyToken, "🎲 記録が1件もありません。まずは日記を書いてみましょう！", buildCommandQuickReply());
-      return;
-    }
-
-    // ランダムに1件選択
-    const randomLogMeta = allLogs[Math.floor(Math.random() * allLogs.length)];
-
-    // 選択されたログの詳細（本文含む）を取得
-    // ※fetchAllLogDatesはメタデータのみのため、詳細取得が必要
-    const details = fetchLogDetails(randomLogMeta.id);
     if (!details) {
-      replyLineMessage(replyToken, "🎲 日記ガチャ失敗… 記録が見つかりませんでした。", buildCommandQuickReply());
+      replyLineMessage(replyToken, "\ud83c\udfb2 \u904e\u53bb\u306e\u8a18\u9332\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3067\u3057\u305f\u3002\u307e\u305a\u306f\u65e5\u8a18\u3092\u66f8\u3044\u3066\u307f\u307e\u3057\u3087\u3046\uff01", buildCommandQuickReply());
       return;
     }
 
-    const dateStr = details.date; // 既にフォーマット済み
-    const label = `🎲 ${dateStr} の記録`;
-
-    replyFlexMessage(replyToken, label, buildPastLogFlex(details, "🎲 日記ガチャ"), buildCommandQuickReply());
+    const label = `\ud83c\udfb2 ${details.date} \u306e\u8a18\u9332`;
+    replyFlexMessage(replyToken, label, buildPastLogFlex(details, "\ud83c\udfb2 \u65e5\u8a18\u30ac\u30c1\u30e3"), buildCommandQuickReply());
 
   } catch (e) {
     console.error("random command error:", e);
-    replyLineMessage(replyToken, "⚠️ エラーが発生しました: " + e.message, buildCommandQuickReply());
+    replyLineMessage(replyToken, "\u26a0\ufe0f \u30a8\u30e9\u30fc\u304c\u767a\u751f\u3057\u307e\u3057\u305f: " + e.message, buildCommandQuickReply());
   }
 }

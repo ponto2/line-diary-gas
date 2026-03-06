@@ -462,7 +462,7 @@ function fetchLogDetails(pageId) {
     const page = fetchNotionAPI(`/v1/pages/${pageId}`, { method: 'get' });
     const props = page.properties;
     const tags = (props["Tags"]?.multi_select || []).map(t => t.name);
-    const body = fetchPageBodyText(page.id);
+    const bodyResult = fetchPageBodyAndImageUrl(page.id);
     const d = new Date(page.created_time);
 
     return {
@@ -471,7 +471,8 @@ function fetchLogDetails(pageId) {
       title: props["Name"]?.title?.[0]?.plain_text || "無題",
       mood: props["Mood"]?.select?.name || "😐",
       tags: tags,
-      body: body
+      body: bodyResult.body,
+      imageUrl: bodyResult.imageUrl
     };
   } catch (e) {
     console.error(`ログ詳細取得エラー (${pageId}):`, e.message);

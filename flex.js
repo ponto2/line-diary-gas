@@ -549,7 +549,23 @@ function buildPastLogFlex(log, headerLabel) {
             }
           ]
         },
-        { type: "separator", margin: "md" },
+        { type: "separator", margin: "md" }
+      ].concat(log.imageUrl ? [
+        {
+          type: "box",
+          layout: "horizontal",
+          spacing: "sm",
+          margin: "md",
+          paddingAll: "10px",
+          backgroundColor: "#E8EAF6",
+          cornerRadius: "md",
+          action: { type: "uri", uri: log.imageUrl },
+          contents: [
+            { type: "text", text: "📷", size: "sm", flex: 0 },
+            { type: "text", text: "写真を開く (Google Drive)", size: "sm", color: "#3949AB", weight: "bold", flex: 1, decoration: "underline" }
+          ]
+        }
+      ] : [
         {
           type: "text",
           text: (log.body || "本文なし").substring(0, 100) + (log.body && log.body.length > 100 ? "..." : ""),
@@ -558,7 +574,7 @@ function buildPastLogFlex(log, headerLabel) {
           wrap: true,
           margin: "md"
         }
-      ]
+      ])
     }
   };
 }

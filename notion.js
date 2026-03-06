@@ -193,10 +193,69 @@ function fetchLogsByDateRange(start, end, includeBody) {
       tags: tags
     };
     if (includeBody) {
-      log.body = fetchPageBodyText(page.id);
+      const result = fetchPageBodyAndImageUrl(page.id);
+      log.body = result.body;
+      log.imageUrl = result.imageUrl;
     }
     return log;
   });
+}
+
+/**
+ * Notionページの本文テキストとDrive画像URLを取得
+ * リンクブロック（Google Drive）は本文から除外し、imageUrlとして返す
+ * @param {string} pageId - NotionページID
+ * @returns {{body: string, imageUrl: string|null}}
+ */
+function fetchPageBodyAndImageUrl(pageId) {
+  const url = `https://api.notion.com/v1/blocks/${pageId}/children`;
+
+  try {
+    const response = UrlFetchApp.fetch(url, {
+      method: 'get',
+      headers: {
+        'Authorization': `Bearer ${NOTION_TOKEN}`,
+        'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28'
+      },
+      muteHttpExceptions: true
+    });
+
+    if (response.getResponseCode() !== 200) return { body: "(取得失敗)", imageUrl: null };
+
+    const blocks = JSON.parse(response.getContentText()).results || [];
+    let text = "";
+    let imageUrl = null;
+
+    for (const block of blocks) {
+      const richTexts = block[block.type]?.rich_text || [];
+
+      // ブロック内にDriveリンクがあるか判定
+      let driveUrl = null;
+      for (const rt of richTexts) {
+        const href = rt.text?.link?.url || rt.href || null;
+        if (href && href.indexOf("drive.google.com") !== -1) {
+          driveUrl = href;
+          break;
+        }
+      }
+
+      if (driveUrl) {
+        // Driveリンクブロックはbodyに含めず、URLだけ抽出
+        imageUrl = driveUrl;
+      } else {
+        // 通常ブロック → plain_textを連結
+        for (const rt of richTexts) {
+          text += rt.plain_text || "";
+        }
+      }
+    }
+
+    return { body: text || "(本文なし)", imageUrl: imageUrl };
+  } catch (e) {
+    console.error(`本文取得エラー (${pageId}):`, e);
+    return { body: "(取得失敗)", imageUrl: null };
+  }
 }
 
 /**

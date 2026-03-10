@@ -85,13 +85,20 @@ function doPost(e) {
     return ContentService.createTextOutput("config error");
   }
 
+  let events;
   try {
-    const events = JSON.parse(e.postData.contents).events || [];
-    events.forEach(event => {
-      if (event.type !== 'message') return;
-      const msg = event.message;
-      const replyToken = event.replyToken;
+    events = JSON.parse(e.postData.contents).events || [];
+  } catch (parseErr) {
+    console.error("リクエスト解析エラー:", parseErr);
+    return ContentService.createTextOutput("parse error");
+  }
 
+  events.forEach(event => {
+    if (event.type !== 'message') return;
+    const msg = event.message;
+    const replyToken = event.replyToken;
+
+    try {
       // A. テキスト
       if (msg.type === 'text') {
         // コマンド判定: "/" で始まる場合はコマンドとして処理
@@ -119,15 +126,22 @@ function doPost(e) {
 
         processContent(logText, imageUrl, imageBlob, replyToken);
       }
-    });
-  } catch (err) {
-    // エラー時にNotionへ記録を試みる
-    try {
-      saveToNotion({ title: "❌ システムエラー", mood: "😰", tags: ["その他"] }, err.toString(), null);
-    } catch (notionErr) {
-      console.error("Notion保存も失敗:", notionErr);
+    } catch (err) {
+      console.error("イベント処理エラー:", err);
+      // ユーザーへエラーを返信（replyToken が有効な場合）
+      try {
+        replyLineMessage(replyToken, "⚠️ エラーが発生しました。しばらくしてからもう一度お試しください。", buildCommandQuickReply());
+      } catch (replyErr) {
+        console.error("エラー返信も失敗:", replyErr);
+      }
+      // Notionにエラーを記録
+      try {
+        saveToNotion({ title: "❌ システムエラー", mood: "😰", tags: ["その他"] }, err.toString(), null);
+      } catch (notionErr) {
+        console.error("Notion保存も失敗:", notionErr);
+      }
     }
-  }
+  });
   return ContentService.createTextOutput("ok");
 }
 

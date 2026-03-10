@@ -578,3 +578,100 @@ function buildPastLogFlex(log, headerLabel) {
     }
   };
 }
+
+/**
+ * /help コマンド一覧の Flex Message
+ */
+function buildHelpFlex() {
+  var commands = [
+    { cmd: "/today",     icon: "📝", desc: "今日の記録を表示" },
+    { cmd: "/yesterday", icon: "⏪", desc: "昨日の記録を表示" },
+    { cmd: "/stats",     icon: "📊", desc: "直近7日間の統計" },
+    { cmd: "/streak",    icon: "🔥", desc: "連続記録日数" },
+    { cmd: "/review",    icon: "🧐", desc: "週次レビューを生成" },
+    { cmd: "/monthly",   icon: "📅", desc: "月次レビューを生成" },
+    { cmd: "/onthisday", icon: "🕰️", desc: "過去の同じ日の記録" },
+    { cmd: "/random",    icon: "🎲", desc: "ランダムに過去の記録" },
+    { cmd: "/help",      icon: "❓", desc: "このヘルプを表示" }
+  ];
+
+  var commandItems = commands.map(function (c) {
+    return {
+      type: "box",
+      layout: "horizontal",
+      spacing: "md",
+      contents: [
+        { type: "text", text: c.icon, size: "sm", flex: 0 },
+        { type: "text", text: c.cmd, size: "sm", weight: "bold", color: "#1B5E20", flex: 0 },
+        { type: "text", text: c.desc, size: "xs", color: "#666666", flex: 1, wrap: true }
+      ]
+    };
+  });
+
+  return {
+    type: "bubble",
+    size: "kilo",
+    styles: {
+      header: { backgroundColor: "#1B5E20" }
+    },
+    header: {
+      type: "box",
+      layout: "vertical",
+      contents: [
+        { type: "text", text: "❓ コマンド一覧", color: "#FFFFFF", size: "sm", weight: "bold" }
+      ]
+    },
+    body: {
+      type: "box",
+      layout: "vertical",
+      spacing: "sm",
+      contents: [
+        { type: "text", text: "使えるコマンド", size: "xs", color: "#999999" }
+      ].concat(commandItems).concat([
+        { type: "separator", margin: "md" },
+        { type: "text", text: "テキストや写真を送ると日記として記録します", size: "xs", color: "#999999", wrap: true, margin: "md" }
+      ])
+    }
+  };
+}
+
+/**
+ * 不明なコマンドの Flex Message
+ * @param {string} cmd - ユーザーが入力したコマンド文字列
+ */
+function buildUnknownCommandFlex(cmd) {
+  return {
+    type: "bubble",
+    size: "kilo",
+    styles: {
+      header: { backgroundColor: "#E65100" }
+    },
+    header: {
+      type: "box",
+      layout: "vertical",
+      contents: [
+        { type: "text", text: "⚠️ 不明なコマンド", color: "#FFFFFF", size: "sm", weight: "bold" }
+      ]
+    },
+    body: {
+      type: "box",
+      layout: "vertical",
+      spacing: "md",
+      contents: [
+        {
+          type: "box",
+          layout: "horizontal",
+          spacing: "sm",
+          backgroundColor: "#FFF3E0",
+          cornerRadius: "md",
+          paddingAll: "10px",
+          contents: [
+            { type: "text", text: cmd, size: "sm", weight: "bold", color: "#E65100", wrap: true }
+          ]
+        },
+        { type: "text", text: "このコマンドは存在しません。", size: "sm", color: "#666666", wrap: true },
+        { type: "text", text: "/help で使えるコマンドを確認できます。", size: "sm", color: "#1B5E20", wrap: true }
+      ]
+    }
+  };
+}

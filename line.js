@@ -93,6 +93,17 @@ function buildCommandQuickReply() {
 }
 
 /**
+ * 写真待機時用 Quick Reply（「このまま記録」ボタンのみ）
+ */
+function buildPhotoQuickReply() {
+  return {
+    items: [
+      { type: "action", action: { type: "message", label: "📷 このまま記録", text: "/saveimage" } }
+    ]
+  };
+}
+
+/**
  * 汎用: 複数メッセージを返信する関数
  */
 function replyMessages(replyToken, messages) {

@@ -550,8 +550,9 @@ function buildPastLogFlex(log, headerLabel) {
           ]
         },
         { type: "separator", margin: "md" }
-      ].concat(log.imageUrl ? [
-        {
+      ].concat(function () {
+        // 写真リンクボタン
+        var photoButton = {
           type: "box",
           layout: "horizontal",
           spacing: "sm",
@@ -564,17 +565,29 @@ function buildPastLogFlex(log, headerLabel) {
             { type: "text", text: "📷", size: "sm", flex: 0 },
             { type: "text", text: "写真を開く (Google Drive)", size: "sm", color: "#3949AB", weight: "bold", flex: 1, decoration: "underline" }
           ]
-        }
-      ] : [
-        {
+        };
+        // 本文プレビュー
+        var bodyPreview = {
           type: "text",
           text: (log.body || "本文なし").substring(0, 100) + (log.body && log.body.length > 100 ? "..." : ""),
           size: "sm",
           color: "#666666",
           wrap: true,
           margin: "md"
+        };
+
+        if (log.imageUrl) {
+          // 旧形式判定: bodyが空/本文なし/📷始まり → 写真リンクのみ
+          var body = log.body || "";
+          if (!body || body === "(本文なし)" || body.trimStart().indexOf("📷") === 0) {
+            return [photoButton];
+          }
+          // 新形式: 写真リンク + 本文プレビュー
+          return [photoButton, bodyPreview];
         }
-      ])
+        // テキストのみ: 本文プレビューのみ
+        return [bodyPreview];
+      }())
     }
   };
 }

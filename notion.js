@@ -6,16 +6,9 @@ function saveToNotion(data, bodyText, imageUrl) {
   const url = 'https://api.notion.com/v1/pages';
   const safeBody = (bodyText || "").substring(0, LIMITS.NOTION_BODY_MAX);
 
-  // ブロック作成
-  const childrenBlocks = [
-    {
-      object: 'block',
-      type: 'paragraph',
-      paragraph: { rich_text: [{ type: 'text', text: { content: safeBody } }] }
-    }
-  ];
+  // ブロック作成: 画像リンクがある場合は本文より先頭に配置
+  const childrenBlocks = [];
 
-  // 画像がある場合、安全なリンクを追加
   if (imageUrl) {
     childrenBlocks.push({
       object: 'block',
@@ -34,6 +27,12 @@ function saveToNotion(data, bodyText, imageUrl) {
       }
     });
   }
+
+  childrenBlocks.push({
+    object: 'block',
+    type: 'paragraph',
+    paragraph: { rich_text: [{ type: 'text', text: { content: safeBody } }] }
+  });
 
   const payload = {
     parent: { database_id: NOTION_DB_ID },

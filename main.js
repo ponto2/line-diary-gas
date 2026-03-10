@@ -69,6 +69,8 @@ const LIMITS = {
   PROPERTY_VALUE_MAX: 2000,
   /** /onthisday で遡る最大年数 */
   ONTHISDAY_YEARS: 5,
+  /** 写真待機のタイムアウト（ミリ秒）: 30分 */
+  PENDING_IMAGE_TIMEOUT: 30 * 60 * 1000,
 };
 
 function doPost(e) {
@@ -101,30 +103,56 @@ function doPost(e) {
     try {
       // A. テキスト
       if (msg.type === 'text') {
-        // コマンド判定: "/" で始まる場合はコマンドとして処理
+        const pending = getPendingImage();
+
         if (msg.text.startsWith('/')) {
+          // コマンド: /saveimage は待機画像をハンドラ側で処理するのでスキップ
+          if (pending && msg.text.trim().toLowerCase() !== '/saveimage') {
+            finalizePendingImage(pending);
+            try { pushLineMessage("📷 待機中の写真を写真日記として記録しました"); } catch (pe) { console.error("Push通知失敗:", pe); }
+          }
           handleCommand(msg.text.trim(), replyToken);
         } else {
-          processContent(msg.text, null, null, replyToken);
+          // 通常テキスト: 待機画像があれば結合
+          if (pending) {
+            const elapsed = Date.now() - pending.timestamp;
+            if (elapsed <= LIMITS.PENDING_IMAGE_TIMEOUT) {
+              // 30分以内: 写真+テキストを結合して1エントリ
+              clearPendingImage();   // processContent 前にクリア（例外時の二重記録防止）
+              processContent(msg.text, pending.url, null, replyToken);
+            } else {
+              // 30分超過: 写真を単独確定（内部でclear済み） → テキストは通常処理
+              finalizePendingImage(pending);
+              try { pushLineMessage("⏰ 以前送った写真を写真日記として記録しました"); } catch (pe) { console.error("Push通知失敗:", pe); }
+              processContent(msg.text, null, null, replyToken);
+            }
+          } else {
+            processContent(msg.text, null, null, replyToken);
+          }
         }
       }
-      // B. 画像
+      // B. 画像: Drive保存して待機状態にする
       else if (msg.type === 'image') {
-        // 画像保存に失敗してもテキスト記録は行うグレースフルデグラデーション
+        // 既に待機中の画像があれば先に単独確定
+        const existing = getPendingImage();
+        if (existing) {
+          finalizePendingImage(existing);
+          try { pushLineMessage("📷 前の写真を写真日記として記録しました"); } catch (pe) { console.error("Push通知失敗:", pe); }
+        }
+
         let imageInfo = null;
         try {
           imageInfo = saveImageToDrive(msg.id);
         } catch (imgErr) {
-          console.error("画像保存失敗（テキストのみで記録を続行）:", imgErr);
+          console.error("画像保存失敗:", imgErr);
         }
 
-        const logText = imageInfo
-          ? `📷 写真をアップロードしました\n(${imageInfo.name})`
-          : "📷 写真が送信されました（画像の保存に失敗しました）";
-        const imageUrl = imageInfo ? imageInfo.url : null;
-        const imageBlob = imageInfo ? imageInfo.blob : null;
-
-        processContent(logText, imageUrl, imageBlob, replyToken);
+        if (imageInfo) {
+          savePendingImage(imageInfo.url, imageInfo.name);
+          replyLineMessage(replyToken, "📷 写真を受け取りました！感想やメモを送ると、一緒に記録します。", buildPhotoQuickReply());
+        } else {
+          replyLineMessage(replyToken, "⚠️ 画像の保存に失敗しました。", buildCommandQuickReply());
+        }
       }
     } catch (err) {
       console.error("イベント処理エラー:", err);
@@ -225,4 +253,56 @@ function saveImageToDrive(messageId) {
     url: viewerUrl,
     blob: blob
   };
+}
+
+// ============================================================
+// 写真待機管理 (PENDING_IMAGE)
+// ============================================================
+
+/**
+ * 待機中の画像情報を取得
+ * @returns {{ url: string, name: string, timestamp: number } | null}
+ */
+function getPendingImage() {
+  const raw = PROPS.getProperty('PENDING_IMAGE');
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    PROPS.deleteProperty('PENDING_IMAGE');
+    return null;
+  }
+}
+
+/**
+ * 画像を待機状態として保存
+ * @param {string} url - Drive画像URL
+ * @param {string} name - ファイル名
+ */
+function savePendingImage(url, name) {
+  PROPS.setProperty('PENDING_IMAGE', JSON.stringify({
+    url: url,
+    name: name,
+    timestamp: Date.now()
+  }));
+}
+
+/** 待機画像をクリア */
+function clearPendingImage() {
+  PROPS.deleteProperty('PENDING_IMAGE');
+}
+
+/**
+ * 待機画像を写真日記として単独確定（Geminiスキップ）
+ * streak更新・DIARY_START_DATE設定も行う
+ * @param {{ url: string, name: string, timestamp: number }} pending
+ */
+function finalizePendingImage(pending) {
+  const data = { title: "📷 写真日記", mood: "😐", tags: ["写真"] };
+  saveToNotion(data, "📷 写真が送信されました", pending.url);
+  try { updateStreakCache(); } catch (e) { console.error("streak cache update failed:", e); }
+  if (!PROPS.getProperty('DIARY_START_DATE')) {
+    PROPS.setProperty('DIARY_START_DATE', new Date().toISOString());
+  }
+  clearPendingImage();
 }

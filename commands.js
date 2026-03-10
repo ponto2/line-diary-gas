@@ -46,6 +46,10 @@ function handleCommand(text, replyToken) {
       handleRandomCommand(replyToken);
       break;
 
+    case '/saveimage':
+      handleSaveImageCommand(replyToken);
+      break;
+
     default:
       replyFlexMessage(replyToken, "不明なコマンドです", buildUnknownCommandFlex(cmd), buildCommandQuickReply());
       break;
@@ -310,6 +314,28 @@ function handleRandomCommand(replyToken) {
 
   } catch (e) {
     console.error("random command error:", e);
+    replyLineMessage(replyToken, "⚠️ エラーが発生しました: " + e.message, buildCommandQuickReply());
+  }
+}
+
+/**
+ * /saveimage コマンド: 待機中の写真をそのまま記録する
+ */
+function handleSaveImageCommand(replyToken) {
+  try {
+    const pending = getPendingImage();
+    if (!pending) {
+      replyLineMessage(replyToken, "📷 待機中の写真はありません。先に写真を送ってください。", buildCommandQuickReply());
+      return;
+    }
+    finalizePendingImage(pending);
+    replyFlexMessage(replyToken, "📷 写真日記を記録しました", buildDiaryRecordFlex({
+      title: "📷 写真日記",
+      mood: "😐",
+      tags: ["写真"]
+    }), buildCommandQuickReply());
+  } catch (e) {
+    console.error("saveimage command error:", e);
     replyLineMessage(replyToken, "⚠️ エラーが発生しました: " + e.message, buildCommandQuickReply());
   }
 }

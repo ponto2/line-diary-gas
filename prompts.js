@@ -241,11 +241,11 @@ function fetchMonthlyLogsFromNotion(monthStart, monthEnd) {
   const basePayload = {
     filter: {
       and: [
-        { timestamp: "created_time", created_time: { on_or_after: monthStart.toISOString() } },
-        { timestamp: "created_time", created_time: { on_or_before: monthEnd.toISOString() } }
+        { property: "Date", date: { on_or_after: monthStart.toISOString() } },
+        { property: "Date", date: { on_or_before: monthEnd.toISOString() } }
       ]
     },
-    sorts: [{ timestamp: "created_time", direction: "ascending" }]
+    sorts: [{ property: "Date", direction: "ascending" }]
   };
 
   // ページネーション対応
@@ -285,7 +285,7 @@ function fetchMonthlyLogsFromNotion(monthStart, monthEnd) {
     const props = page.properties;
     const tags = (props["Tags"]?.multi_select || []).map(t => t.name);
     return {
-      date: new Date(page.created_time).toLocaleDateString("ja-JP"),
+      date: new Date(page.properties["Date"]?.date?.start || page.created_time).toLocaleDateString("ja-JP"),
       title: props["Name"]?.title?.[0]?.plain_text || "無題",
       mood: props["Mood"]?.select?.name || "不明",
       tags: tags,
@@ -334,11 +334,11 @@ function fetchMonthEndSupplementLogs(weeklyReviews, logs, monthEnd) {
     payload: JSON.stringify({
       filter: {
         and: [
-          { timestamp: "created_time", created_time: { on_or_after: supplementStart.toISOString() } },
-          { timestamp: "created_time", created_time: { on_or_before: monthEnd.toISOString() } }
+          { property: "Date", date: { on_or_after: supplementStart.toISOString() } },
+          { property: "Date", date: { on_or_before: monthEnd.toISOString() } }
         ]
       },
-      sorts: [{ timestamp: "created_time", direction: "ascending" }]
+      sorts: [{ property: "Date", direction: "ascending" }]
     }),
     muteHttpExceptions: true
   });
@@ -354,7 +354,7 @@ function fetchMonthEndSupplementLogs(weeklyReviews, logs, monthEnd) {
     const tags = (props["Tags"]?.multi_select || []).map(t => t.name);
     const body = fetchPageBodyText(page.id);
     return {
-      date: new Date(page.created_time).toLocaleDateString("ja-JP"),
+      date: new Date(page.properties["Date"]?.date?.start || page.created_time).toLocaleDateString("ja-JP"),
       title: props["Name"]?.title?.[0]?.plain_text || "無題",
       mood: props["Mood"]?.select?.name || "不明",
       tags: tags,

@@ -39,7 +39,8 @@ function saveToNotion(data, bodyText, imageUrl) {
     properties: {
       "Name": { title: [{ text: { content: data.title || "無題" } }] },
       "Mood": { select: { name: data.mood || "😐" } },
-      "Tags": { multi_select: (data.tags || []).map(tag => ({ name: tag })) }
+      "Tags": { multi_select: (data.tags || []).map(tag => ({ name: tag })) },
+      "Date": { date: { start: new Date().toISOString() } }
     },
     children: childrenBlocks
   };
@@ -72,10 +73,10 @@ function fetchWeeklyLogsFromNotion() {
 
   const basePayload = {
     filter: {
-      timestamp: "created_time",
-      created_time: { on_or_after: isoDate }
+      property: "Date",
+      date: { on_or_after: isoDate }
     },
-    sorts: [{ timestamp: "created_time", direction: "ascending" }]
+    sorts: [{ property: "Date", direction: "ascending" }]
   };
 
   let allResults = [];
@@ -114,7 +115,7 @@ function fetchWeeklyLogsFromNotion() {
     const tags = (props["Tags"]?.multi_select || []).map(t => t.name);
     const body = fetchPageBodyText(page.id);
     return {
-      date: new Date(page.created_time).toLocaleDateString("ja-JP"),
+      date: new Date(page.properties["Date"]?.date?.start || page.created_time).toLocaleDateString("ja-JP"),
       title: props["Name"]?.title?.[0]?.plain_text || "無題",
       mood: props["Mood"]?.select?.name || "不明",
       tags: tags,
@@ -164,11 +165,11 @@ function fetchLogsByDateRange(start, end, includeBody) {
     payload: JSON.stringify({
       filter: {
         and: [
-          { timestamp: "created_time", created_time: { on_or_after: start.toISOString() } },
-          { timestamp: "created_time", created_time: { before: end.toISOString() } }
+          { property: "Date", date: { on_or_after: start.toISOString() } },
+          { property: "Date", date: { before: end.toISOString() } }
         ]
       },
-      sorts: [{ timestamp: "created_time", direction: "ascending" }]
+      sorts: [{ property: "Date", direction: "ascending" }]
     }),
     muteHttpExceptions: true
   });
@@ -183,7 +184,7 @@ function fetchLogsByDateRange(start, end, includeBody) {
   return results.map(page => {
     const props = page.properties;
     const tags = (props["Tags"]?.multi_select || []).map(t => t.name);
-    const time = new Date(page.created_time);
+    const time = new Date(page.properties["Date"]?.date?.start || page.created_time);
     const log = {
       date: time.toLocaleDateString("ja-JP"),
       time: `${time.getHours()}:${String(time.getMinutes()).padStart(2, '0')}`,

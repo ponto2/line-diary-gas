@@ -79,13 +79,13 @@ function initStreakCache() {
     while (hasMore) {
       const payload = {
         filter: {
-          timestamp: "created_time",
-          created_time: {
+          property: "Date",
+          date: {
             on_or_after: windowStart.toISOString(),
             before: windowEnd.toISOString()
           }
         },
-        sorts: [{ timestamp: "created_time", direction: "descending" }],
+        sorts: [{ property: "Date", direction: "descending" }],
         page_size: 100
       };
       if (nextCursor) payload.start_cursor = nextCursor;
@@ -105,7 +105,7 @@ function initStreakCache() {
 
       const data = JSON.parse(response.getContentText());
       (data.results || []).forEach(page => {
-        recordedDates.add(formatDateKey(new Date(page.created_time)));
+        recordedDates.add(formatDateKey(new Date(page.properties["Date"]?.date?.start || page.created_time)));
       });
 
       hasMore = data.has_more;
@@ -376,14 +376,14 @@ function getDiaryStartDate() {
   try {
     const data = fetchNotionAPI(`/v1/databases/${NOTION_DB_ID}/query`, {
       payload: {
-        sorts: [{ timestamp: "created_time", direction: "ascending" }],
+        sorts: [{ property: "Date", direction: "ascending" }],
         page_size: 1
       }
     });
 
     if (!data.results || data.results.length === 0) return null;
 
-    const startDate = data.results[0].created_time;
+    const startDate = data.results[0].properties["Date"]?.date?.start || data.results[0].created_time;
     PROPS.setProperty('DIARY_START_DATE', startDate);
     return startDate;
   } catch (e) {
@@ -435,13 +435,13 @@ function fetchRandomLog() {
  */
 function queryNotionByTimestamp(timestamp, condition, direction) {
   try {
-    const filter = { timestamp: "created_time", created_time: {} };
-    filter.created_time[condition] = timestamp;
+    const filter = { property: "Date", date: {} };
+    filter.date[condition] = timestamp;
 
     const data = fetchNotionAPI(`/v1/databases/${NOTION_DB_ID}/query`, {
       payload: {
         filter: filter,
-        sorts: [{ timestamp: "created_time", direction: direction }],
+        sorts: [{ property: "Date", direction: direction }],
         page_size: 1
       }
     });
@@ -463,7 +463,7 @@ function fetchLogDetails(pageId) {
     const props = page.properties;
     const tags = (props["Tags"]?.multi_select || []).map(t => t.name);
     const bodyResult = fetchPageBodyAndImageUrl(page.id);
-    const d = new Date(page.created_time);
+    const d = new Date(page.properties["Date"]?.date?.start || page.created_time);
 
     return {
       date: d.toLocaleDateString("ja-JP"),

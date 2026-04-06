@@ -53,7 +53,7 @@ const LINE_USER_ID = PROPS.getProperty('LINE_USER_ID');
 const TAGS = ["研究", "開発", "学習", "趣味", "健康", "資産", "食事", "外出", "写真", "その他"];
 const MOODS = ["🤩", "😊", "😐", "😰", "😡"];
 /** Gemini APIモデル候補（優先順） */
-const MODEL_CANDIDATES = ["gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
+const MODEL_CANDIDATES = ["gemini-3-flash-preview", "gemini-3.1-flash-lite-preview"];
 
 /** システム共通の制限値 */
 const LIMITS = {

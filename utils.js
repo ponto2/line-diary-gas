@@ -230,19 +230,35 @@ function truncateForLine(text, limit) {
 
 /**
  * Geminiでテキスト生成（モデル自動フォールバック付き）
- * @param {string} prompt - プロンプト
+ * @param {string} prompt - Gemini用プロンプト（フォールバック専用）
+ * @param {string} [systemPrompt] - Claude用システムプロンプト
+ * @param {string} [userMessage] - Claude用ユーザーメッセージ
+ * @param {boolean} [useClaude=false] - trueの場合のみClaude Sonnet 4.6を使用（CLAUDE_API_KEY設定時）
  * @returns {{text: string, error: string}}
  */
-function generateTextWithFallback(prompt) {
-  let errorLog = "";
-  for (const model of MODEL_CANDIDATES) {
+function generateTextWithFallback(prompt, systemPrompt, userMessage, useClaude) {
+  var errorLog = '';
+
+  // useClaude=true かつ Claude APIキーが設定されている場合のみClaudeを使用
+  if (useClaude && CLAUDE_API_KEY && systemPrompt && userMessage) {
     try {
-      return { text: callGeminiForText(prompt, model), error: "" };
+      return { text: callClaudeForText(systemPrompt, userMessage), error: '' };
     } catch (e) {
-      errorLog += `[${model}] ${e.message}\n`;
+      errorLog += '[claude-sonnet-4-6] ' + e.message + '\n';
+      console.warn('Claude APIエラー、Geminiにフォールバック: ' + e.message);
     }
   }
-  return { text: "", error: errorLog };
+
+  // Geminiフォールバック（既存のpromptを使用）
+  for (var i = 0; i < MODEL_CANDIDATES.length; i++) {
+    var model = MODEL_CANDIDATES[i];
+    try {
+      return { text: callGeminiForText(prompt, model), error: '' };
+    } catch (e) {
+      errorLog += '[' + model + '] ' + e.message + '\n';
+    }
+  }
+  return { text: '', error: errorLog };
 }
 
 /**
@@ -255,22 +271,39 @@ function validateRequiredProps() {
 }
 
 /**
- * 前回の週次レビューを保存
+ * 前回の週次レビューを保存（分割保存）
+ * PropertiesServiceの1プロパティイ9000文字制限を回避するため、
+ * WEEKLY_REVIEW_0 〜 WEEKLY_REVIEW_4 の個別プロパティに分割保存する。
+ * 5件を超えた場合、最古を削除してシフトする。
  */
 function saveLastReview(text) {
-  // 長すぎる場合は切り詰め（PropertiesServiceの制限: 1値9KB）
-  const safeText = (text || "").substring(0, LIMITS.PROPERTY_VALUE_MAX);
-  PROPS.setProperty('LAST_WEEKLY_REVIEW', safeText);
+  // LAST_WEEKLY_REVIEW: 週次レビューの参照用（PROPERTY_VALUE_MAXで切り詰め）
+  var safeTextForLast = (text || '').substring(0, LIMITS.PROPERTY_VALUE_MAX);
+  PROPS.setProperty('LAST_WEEKLY_REVIEW', safeTextForLast);
 
-  // 月次レビュー用: 直近5件の週次レビューを蓄積
-  const history = JSON.parse(PROPS.getProperty('WEEKLY_REVIEW_HISTORY') || '[]');
-  history.push({
-    date: new Date().toLocaleDateString("ja-JP"),
-    text: (text || "").substring(0, LIMITS.REVIEW_TEXT_MAX)
+  // 旧形式（WEEKLY_REVIEW_HISTORY）が残っている場合は移行
+  migrateWeeklyReviewHistory();
+
+  // 分割保存: WEEKLY_REVIEW_0, 1, 2, ...
+  var safeText = (text || '').substring(0, LIMITS.REVIEW_TEXT_MAX);
+  var count = parseInt(PROPS.getProperty('WEEKLY_REVIEW_COUNT') || '0', 10);
+  var maxSlots = LIMITS.REVIEW_HISTORY_MAX;
+  var entry = JSON.stringify({
+    date: new Date().toLocaleDateString('ja-JP'),
+    text: safeText
   });
-  // 直近N件のみ保持
-  while (history.length > LIMITS.REVIEW_HISTORY_MAX) history.shift();
-  PROPS.setProperty('WEEKLY_REVIEW_HISTORY', JSON.stringify(history));
+
+  if (count >= maxSlots) {
+    // 最古を削除してシフト（0→削除、i+1→i）
+    for (var i = 0; i < maxSlots - 1; i++) {
+      var next = PROPS.getProperty('WEEKLY_REVIEW_' + (i + 1)) || '';
+      PROPS.setProperty('WEEKLY_REVIEW_' + i, next);
+    }
+    PROPS.setProperty('WEEKLY_REVIEW_' + (maxSlots - 1), entry);
+  } else {
+    PROPS.setProperty('WEEKLY_REVIEW_' + count, entry);
+    PROPS.setProperty('WEEKLY_REVIEW_COUNT', String(count + 1));
+  }
 }
 
 /**
@@ -281,11 +314,70 @@ function getLastReview() {
 }
 
 /**
- * 蓄積された週次レビュー履歴を取得
+ * 蓄積された週次レビュー履歴を取得（分割読み出し）
  * @returns {Array<{date: string, text: string}>}
  */
 function getWeeklyReviewHistory() {
-  return JSON.parse(PROPS.getProperty('WEEKLY_REVIEW_HISTORY') || '[]');
+  // 旧形式が残っている場合は移行してから返す
+  migrateWeeklyReviewHistory();
+
+  var count = parseInt(PROPS.getProperty('WEEKLY_REVIEW_COUNT') || '0', 10);
+  var reviews = [];
+  for (var i = 0; i < count; i++) {
+    var raw = PROPS.getProperty('WEEKLY_REVIEW_' + i);
+    if (raw) {
+      try { reviews.push(JSON.parse(raw)); } catch (e) { /* パース失敗はスキップ */ }
+    }
+  }
+  return reviews;
+}
+
+/**
+ * 蓄積された週次レビューを全削除（月次レビュー送信後に呼び出す）
+ */
+function clearWeeklyReviewHistory() {
+  var maxSlots = LIMITS.REVIEW_HISTORY_MAX;
+  for (var i = 0; i < maxSlots; i++) {
+    var key = 'WEEKLY_REVIEW_' + i;
+    if (PROPS.getProperty(key) !== null) {
+      PROPS.deleteProperty(key);
+    }
+  }
+  PROPS.deleteProperty('WEEKLY_REVIEW_COUNT');
+  // 旧形式プロパティもクリア
+  PROPS.deleteProperty('WEEKLY_REVIEW_HISTORY');
+}
+
+/**
+ * 旧形式（WEEKLY_REVIEW_HISTORY）から新形式（分割保存）へ自動移行
+ * 既に新形式が存在する場合や旧形式がない場合は何もしない。
+ */
+function migrateWeeklyReviewHistory() {
+  // 新形式が既に存在する場合は移行不要
+  if (PROPS.getProperty('WEEKLY_REVIEW_COUNT') !== null) return;
+  // 旧形式がなければ何もしない
+  var raw = PROPS.getProperty('WEEKLY_REVIEW_HISTORY');
+  if (!raw) return;
+
+  try {
+    var history = JSON.parse(raw);
+    if (!Array.isArray(history) || history.length === 0) {
+      PROPS.setProperty('WEEKLY_REVIEW_COUNT', '0');
+      PROPS.deleteProperty('WEEKLY_REVIEW_HISTORY');
+      return;
+    }
+    // 旧形式の各エントリを分割プロパティに書き込む
+    var count = Math.min(history.length, LIMITS.REVIEW_HISTORY_MAX);
+    for (var i = 0; i < count; i++) {
+      PROPS.setProperty('WEEKLY_REVIEW_' + i, JSON.stringify(history[i]));
+    }
+    PROPS.setProperty('WEEKLY_REVIEW_COUNT', String(count));
+    PROPS.deleteProperty('WEEKLY_REVIEW_HISTORY');
+    console.log('WEEKLY_REVIEW_HISTORY 移行完了: ' + count + '件');
+  } catch (e) {
+    console.error('WEEKLY_REVIEW_HISTORY 移行エラー:', e);
+    PROPS.setProperty('WEEKLY_REVIEW_COUNT', '0');
+  }
 }
 
 /**

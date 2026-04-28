@@ -49,6 +49,8 @@ const NOTION_DB_ID = PROPS.getProperty('NOTION_DB_ID');
 const GEMINI_API_KEY = PROPS.getProperty('GEMINI_API_KEY');
 const DRIVE_FOLDER_ID = PROPS.getProperty('DRIVE_FOLDER_ID');
 const LINE_USER_ID = PROPS.getProperty('LINE_USER_ID');
+/** Claude API キー（オプション）: 設定するとレビュー自動生成にSonnet 4.6を使用 */
+const CLAUDE_API_KEY = PROPS.getProperty('CLAUDE_API_KEY');
 
 const TAGS = ["研究", "開発", "学習", "趣味", "健康", "資産", "食事", "外出", "写真", "その他"];
 const MOODS = ["🤩", "😊", "😐", "😰", "😡"];
@@ -63,8 +65,8 @@ const LIMITS = {
   LINE_TEXT_MAX: 5000,
   /** 週次レビュー蓄積の保持件数 */
   REVIEW_HISTORY_MAX: 5,
-  /** 蓄積する週次レビュー1件あたりの最大文字数 */
-  REVIEW_TEXT_MAX: 1500,
+  /** 蓄積する週次レビュー1件あたりの最大文字数（分割保存により9000文字制限を回避） */
+  REVIEW_TEXT_MAX: 8000,
   /** PropertiesService 1値あたりの安全な最大文字数 */
   PROPERTY_VALUE_MAX: 2000,
   /** /onthisday で遡る最大年数 */

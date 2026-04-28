@@ -90,8 +90,9 @@ function handleReviewCommand(replyToken) {
     const lastReview = getLastReview();
     const stats = buildLogStatistics(logs);
 
-    const reviewContext = buildWeeklyReviewPrompt(userProfile, lastReview, stats, logs);
-    const result = generateTextWithFallback(reviewContext);
+    // 手動コマンドはGemini固定（コスト爆発防止）
+    const { geminiPrompt } = buildWeeklyReviewPrompt(userProfile, lastReview, stats, logs);
+    const result = generateTextWithFallback(geminiPrompt);
 
     if (result.text) {
       const header = "📅 【週次レビュー】\n\n";
@@ -139,12 +140,9 @@ function handleMonthlyCommand(replyToken) {
     const targetYearMonth = targetMonthStart.getFullYear() + "年" + (targetMonthStart.getMonth() + 1) + "月";
     const label = isEndOfMonth ? targetYearMonth + " 月次レビュー" : targetYearMonth + " 月次レビュー（中間）";
 
-    // 月末の未レビュー日の日記本文を補完取得
-    const supplementLogs = fetchMonthEndSupplementLogs(weeklyReviews, logs, targetMonthEnd);
-
-    const prompt = buildMonthlyReviewPrompt(userProfile, weeklyReviews, lastMonthlyReview, stats, logs, targetYearMonth, supplementLogs);
-
-    const result = generateTextWithFallback(prompt);
+    // 手動コマンドはGemini固定（コスト爆発防止）
+    const { geminiPrompt } = buildMonthlyReviewPrompt(userProfile, weeklyReviews, lastMonthlyReview, stats, logs, targetYearMonth);
+    const result = generateTextWithFallback(geminiPrompt);
 
     if (result.text) {
       const header = "📆 【" + label + "】\n\n";

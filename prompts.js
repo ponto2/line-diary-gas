@@ -137,8 +137,9 @@ function sendWeeklyReview() {
   const lastReview = getLastReview();
   const stats = buildLogStatistics(logs);
 
-  const reviewContext = buildWeeklyReviewPrompt(userProfile, lastReview, stats, logs);
-  const result = generateTextWithFallback(reviewContext);
+  // 定期トリガーの場合は Claude を使用（useClaude: true）
+  const { geminiPrompt, systemPrompt, userMessage } = buildWeeklyReviewPrompt(userProfile, lastReview, stats, logs);
+  const result = generateTextWithFallback(geminiPrompt, systemPrompt, userMessage, true);
 
   if (result.text) {
     const header = "📅 【週次レビュー】\n\n";
@@ -203,12 +204,13 @@ function sendMonthlyReview() {
   const stats = buildLogStatistics(logs);
   const targetYearMonth = targetMonthStart.getFullYear() + "年" + (targetMonthStart.getMonth() + 1) + "月";
 
-  // 3-b. 月末の未レビュー日の日記本文を補完取得
-  const supplementLogs = fetchMonthEndSupplementLogs(weeklyReviews, logs, targetMonthEnd);
+  // 全日記本文はfetchMonthlyLogsFromNotion内で取得済みのためsupplementLogsは不要
+  const { geminiPrompt, systemPrompt, userMessage } = buildMonthlyReviewPrompt(
+    userProfile, weeklyReviews, lastMonthlyReview, stats, logs, targetYearMonth
+  );
 
-  const prompt = buildMonthlyReviewPrompt(userProfile, weeklyReviews, lastMonthlyReview, stats, logs, targetYearMonth, supplementLogs);
-
-  const result = generateTextWithFallback(prompt);
+  // 定期トリガーの場合は Claude を使用（useClaude: true）
+  const result = generateTextWithFallback(geminiPrompt, systemPrompt, userMessage, true);
 
   if (result.text) {
     const header = "📆 【" + targetYearMonth + " 月次レビュー】\n\n";
@@ -223,12 +225,13 @@ function sendMonthlyReview() {
     pushMessages(messages);
     saveLastMonthlyReview(result.text);
 
-    // 月次レビュー送信後、週次レビュー蓄積をクリア
-    PROPS.setProperty('WEEKLY_REVIEW_HISTORY', '[]');
+    // 月次レビュー送信後、週次レビュー蓄積をクリア（分割保存対応）
+    clearWeeklyReviewHistory();
   } else {
     pushLineMessage("月次レビューの生成に失敗しました。\n" + result.error);
   }
 }
+
 
 /**
  * Notionから指定期間のログメタデータを取得（本文省略版）
@@ -280,19 +283,29 @@ function fetchMonthlyLogsFromNotion(monthStart, monthEnd) {
     nextCursor = data.next_cursor;
   }
 
-  // 本文は取得しない（トークン節約・API呼び出し削減）
-  return allResults.map(page => {
-    const props = page.properties;
-    const tags = (props["Tags"]?.multi_select || []).map(t => t.name);
+  // 本文も取得（月次レビューの品質向上のため）
+  // Rate Limit 回避のため各取得の間に sleep(100ms) を入れる
+  return allResults.map(function(page) {
+    var props = page.properties;
+    var tags = (props["Tags"] && props["Tags"].multi_select || []).map(function(t) { return t.name; });
+    var body = "";
+    try {
+      body = fetchPageBodyText(page.id);
+      Utilities.sleep(100);
+    } catch (e) {
+      body = "";
+      console.warn("月次ログ本文取得失敗 (" + page.id + "): " + e.message);
+    }
     return {
-      date: new Date(page.properties["Date"]?.date?.start || page.created_time).toLocaleDateString("ja-JP"),
-      title: props["Name"]?.title?.[0]?.plain_text || "無題",
-      mood: props["Mood"]?.select?.name || "不明",
+      date: new Date(page.properties["Date"] && page.properties["Date"].date && page.properties["Date"].date.start || page.created_time).toLocaleDateString("ja-JP"),
+      title: props["Name"] && props["Name"].title && props["Name"].title[0] && props["Name"].title[0].plain_text || "無題",
+      mood: props["Mood"] && props["Mood"].select && props["Mood"].select.name || "不明",
       tags: tags,
-      body: "" // 月次では本文を省略
+      body: body
     };
   });
 }
+
 
 /**
  * 月末の未レビュー日の日記本文を補完取得する
@@ -365,9 +378,16 @@ function fetchMonthEndSupplementLogs(weeklyReviews, logs, monthEnd) {
 
 /**
  * 週次レビューのプロンプトを組み立てる (sendWeeklyReview / /review コマンド 共通)
+ * @returns {{geminiPrompt: string, systemPrompt: string, userMessage: string}}
+ *   geminiPrompt: Gemini向け（/reviewコマンドのフォールバック用）
+ *   systemPrompt: Claude向けシステムプロンプト（ロール・フレームワーク・ルール）
+ *   userMessage:  Claude向けユーザーメッセージ（データ・ログ）
  */
 function buildWeeklyReviewPrompt(userProfile, lastReview, stats, logs) {
-  let prompt = `あなたはユーザーの成長を見守る「パーソナル心理メンター」です。
+  // =====================================================
+  // Gemini 向けプロンプト（既存の実装を維持・後方互換）
+  // =====================================================
+  let geminiPrompt = `あなたはユーザーの成長を見守る「パーソナル心理メンター」です。
 以下の心理学フレームワークに基づき、表面的な要約ではなく、ユーザーの行動パターンや心理的欲求に踏み込んだ週次レビューを作成してください。
 
 【👤 ユーザー情報（内部参照用）】
@@ -435,16 +455,13 @@ ${userProfile}
    - なければ省略可
 `;
 
-  // 前回レビューがあれば追加
   if (lastReview) {
-    prompt += `\n【📌 前回の週次レビュー（参考）】\n以下は先週のレビュー内容です。先週提案した「小さな実験」が実行されたか、先週の課題が改善されたか、といった連続性を意識してください。\n${lastReview}\n`;
+    geminiPrompt += `\n【📌 前回の週次レビュー（参考）】\n以下は先週のレビュー内容です。先週提案した「小さな実験」が実行されたか、先週の課題が改善されたか、といった連続性を意識してください。\n${lastReview}\n`;
   }
 
-  // 統計サマリー
-  prompt += `\n【📈 今週の統計サマリー】\n${stats}\n`;
+  geminiPrompt += `\n【📈 今週の統計サマリー】\n${stats}\n`;
 
-  // Few-shot例
-  prompt += `\n【✏️ 出力例（このレベルの具体性で書くこと）】
+  geminiPrompt += `\n【✏️ 出力例（このレベルの具体性で書くこと）】
 
 🏆 今週のあなたの強み
 火曜の「シミュレーション結果が合わなくてアプローチを変えた」という記録が印象的です。うまくいかないときに粘り強く別の方法を試すのは、あなたの探究心と柔軟さの表れです。また、木曜に自発的にGASの開発に取り組んでいたことから、自分で選んで動く力が今週は特に活きていました。
@@ -457,24 +474,131 @@ ${userProfile}
 
 （例ここまで。上記はあくまで形式の参考です。実際のログ内容に基づいて書いてください）\n`;
 
-  // 日記ログ
-  prompt += `\n【日記ログ】\n`;
-  logs.forEach(log => {
-    prompt += `---\n[${log.date}] 気分:${log.mood} タグ:${log.tags.join(", ")}\nタイトル: ${log.title}\n本文: ${log.body}\n`;
+  geminiPrompt += `\n【日記ログ】\n`;
+  logs.forEach(function(log) {
+    geminiPrompt += `---\n[${log.date}] 気分:${log.mood} タグ:${log.tags.join(", ")}\nタイトル: ${log.title}\n本文: ${log.body}\n`;
   });
 
-  return prompt;
+  // =====================================================
+  // Claude 向け: systemPrompt（ロール・フレームワーク・ルール）
+  // =====================================================
+  var systemPrompt = `あなたはユーザーの成長を見守る「パーソナル心理メンター」です。
+
+<role>
+表面的な要約ではなく、ユーザーの行動パターンや心理的欲求に踏み込んだ週次レビューを作成してください。
+週次レビューは「1週間のスナップショット」として、その週特有のパターンと変化を浮かび上がらせることが目的です。
+</role>
+
+<user_profile>
+以下の情報はログの行動パターンを正しく解釈するための背景知識として使用すること。
+出力でプロフィール内容に直接言及しないこと（「理系のあなたは〜」「研究者として〜」のような表現は禁止）。
+${userProfile}
+</user_profile>
+
+<analysis_frameworks>
+以下のフレームワークは分析の内部ガイドとして使用すること。出力にフレームワーク名や専門用語を含めないこと。
+
+■ 自己決定理論 (SDT)
+- 自律性: 自分の意志で選択・行動できていたか（やらされ仕事 vs 自発的活動）
+- 有能感: 「できた」「成長した」と感じられる出来事があったか
+- 関係性: 人とのつながりや協力を感じる場面があったか
+- 欠けている欲求があれば、それを自然に満たせる行動を提案する
+
+■ ポジティブ心理学 (PERMA)
+- 日記ログの中から「強み」の発揮を見つけ、言語化する
+- 「頑張ったね」のような漠然とした褒めではなく、「○○という行動は、あなたの△△という強みの表れです」のように具体化する
+
+■ 成長マインドセット
+- 結果ではなく「プロセス」と「戦略」を称賛する
+- 困難やネガティブな出来事は「学習機会」として肯定的にリフレーミングする
+- ただし無理なポジティブ転換は厳禁。辛さを認めた上で意味づけする
+
+■ 認知行動療法の視点
+- 気分の推移パターンから認知の歪みの兆候を読み取る
+- 気分が低下した日の前後関係から、トリガーとなる行動や状況を推測する
+- 自動思考の修正ではなく、気づきを促す問いかけの形で伝える
+</analysis_frameworks>
+
+<constraints>
+- フレームワーク名（SDT、PERMA、CBTなど）を出力に含めない。専門用語ではなく日常的な言葉で語ること
+- 全セクションを均等に書かない。今週特に目立つテーマに重点を置き、メリハリをつけること
+- 「頑張りましたね」「素晴らしいですね」など漠然とした褒め言葉は禁止。必ず具体的な行動を引用すること
+- 日記に書かれていない事実を捏造しない。推測する場合は「もしかすると〜かもしれません」と明示すること
+- Markdown記法（**太字**、*斜体*、#見出し、-リストなど）は一切使用禁止。LINEはMarkdown非対応のため、強調は「」や【】で囲むこと
+</constraints>
+
+<output_rules>
+- 全体で500〜700文字程度（LINEで読みやすい長さ）
+- 語りかける二人称「あなた」を使い、温かみのある口調で
+- 分析の根拠を必ず日記ログの具体的内容に紐づけること
+</output_rules>
+
+<output_structure>
+以下の構成で出力すること：
+
+1. 🏆 今週のあなたの強み
+   - ログから読み取れる「強みが発揮された瞬間」を1〜2個ピックアップ
+   - 結果ではなく行動・姿勢を評価する
+
+2. 🔄 気分と行動のパターン分析
+   - ムード推移を時系列で読み取り、傾向を1〜2文で要約
+   - 気分が上向いた日・下がった日の行動との相関を指摘
+
+3. 💡 来週の「小さな実験」
+   - 具体的で小さなアクション1つ。「実験」というフレーミングで心理的ハードルを下げる
+
+4. 📝 一言メモ（任意）
+   - 特に気になるパターンがあれば添える。なければ省略可
+</output_structure>
+
+<example>
+🏆 今週のあなたの強み
+火曜の「シミュレーション結果が合わなくてアプローチを変えた」という記録が印象的です。うまくいかないときに粘り強く別の方法を試すのは、あなたの探究心と柔軟さの表れです。
+
+🔄 気分と行動のパターン分析
+週前半は😊が続いていましたが、水曜の深夜作業の翌日に😰へ下がっています。睡眠時間と気分に関連があるかもしれません。
+
+💡 来週の小さな実験
+今週は一人で集中する時間が多かったようです。来週は1日だけ、研究室の誰かとランチに行ってみてください。
+</example>`;
+
+  // =====================================================
+  // Claude 向け: userMessage（データ・コンテキスト）
+  // =====================================================
+  var userMessage = "以下のデータに基づいて週次レビューを作成してください。\n\n";
+
+  if (lastReview) {
+    userMessage += "<previous_review>\n" + lastReview + "\n</previous_review>\n\n";
+  }
+
+  userMessage += "<statistics>\n" + stats + "\n</statistics>\n\n";
+
+  userMessage += "<diary_logs>\n";
+  logs.forEach(function(log) {
+    userMessage += '<entry date="' + log.date + '" mood="' + log.mood + '" tags="' + log.tags.join(", ") + '">\n';
+    userMessage += '<title>' + log.title + '</title>\n';
+    if (log.body) {
+      userMessage += '<body>' + log.body + '</body>\n';
+    }
+    userMessage += '</entry>\n';
+  });
+  userMessage += "</diary_logs>";
+
+  return { geminiPrompt: geminiPrompt, systemPrompt: systemPrompt, userMessage: userMessage };
 }
+
 
 /**
  * 月次レビューのプロンプトを組み立てる (sendMonthlyReview / /monthly コマンド 共通)
- * 週次レビューの蓄積を主要な入力とし、月間ログのメタデータで補完する
+ * 週次レビューの蓄積を主要な入力とし、月間ログの全文で補完する
+ * @returns {{geminiPrompt: string, systemPrompt: string, userMessage: string}}
  */
-function buildMonthlyReviewPrompt(userProfile, weeklyReviews, lastMonthlyReview, stats, logs, yearMonth, supplementLogs) {
-  // yearMonthは呼び出し元から渡される（例: "2026年1月"）
-  // supplementLogsは月末の未レビュー日の日記本文（補完用）
+function buildMonthlyReviewPrompt(userProfile, weeklyReviews, lastMonthlyReview, stats, logs, yearMonth) {
 
-  let prompt = `あなたはユーザーの長期的な成長を見守る「パーソナルライフコーチ」です。
+  // =====================================================
+  // Gemini 向けプロンプト（既存の実装を維持・後方互換）
+  // =====================================================
+  var geminiPrompt = `あなたはユーザーの長期的な成長を見守る「パーソナルライフコーチ」です。
 以下のフレームワークと情報に基づき、この1ヶ月間を深く振り返る月次レビューを作成してください。
 週次レビューが「1週間のスナップショット」であるのに対し、月次レビューは「1ヶ月の物語」です。
 点と点をつなぎ、本人も気づいていない変化の流れを浮かび上がらせてください。
@@ -489,107 +613,205 @@ ${userProfile}
 ■ ナラティブ・アイデンティティ（McAdams）
 - 週次レビューの蓄積を「1ヶ月の物語」として読み解く
 - 月の前半と後半で語り口や行動パターンに変化があったか
-- ユーザーの「自分はこういう人間だ」という自己物語がどう表れているか
 - 成長や変化を「物語の転換点」として捉え、言語化する
 
-■ 自己決定理論 (SDT: Deci & Ryan) ── 月間スケールで
+■ 自己決定理論 (SDT) ── 月間スケールで
 - 自律性・有能感・関係性の3つの心理欲求について、月全体での充足パターンを読む
-- 週によって充足度に波がある場合、その波の原因（環境変化、プロジェクトの節目など）を推測する
 - 月間を通じて慢性的に不足している欲求があれば、構造的な改善を提案する
 
-■ ポジティブ心理学 (Seligman: PERMA) ── 強みの進化
+■ ポジティブ心理学 (PERMA) ── 強みの進化
 - 1ヶ月の中で「繰り返し発揮されている強み」を特定する
-- 月の前半と後半で強みの使い方に変化や深まりがあったかを検出する
 - 新しく芽生えた強みや、まだ十分に活かされていない潜在的な強みに注目する
 
 ■ 習慣形成理論 (Clear: Atomic Habits)
 - 記録の頻度パターンから習慣の定着度を読み取る
-- 「習慣スタッキング」の兆候（ある行動が別の行動を自然に引き起こしている）を発見する
 - 習慣が途切れた時期がある場合、その前後の状況からトリガーと障壁を推測する
 
 ■ フロー理論 (Csikszentmihalyi)
 - タグやムードのパターンから、ユーザーが「没頭していた」と推測される活動を特定する
-- スキルとチャレンジのバランスが取れていた時期・崩れていた時期を読み取る
-- フロー状態に入りやすい条件（時間帯、前後の活動、環境）を推測する
 
 ■ 認知行動療法 (CBT) ── 長期パターン
 - 1ヶ月のムード推移から、週次レビューでは見えなかった長期的な認知パターンを検出する
 - 特定の曜日や週に気分が下がりやすいパターンがないか確認する
-- 「思考の癖」が繰り返し現れている場合、それに気づかせる問いかけをする
 
 【🚫 やってはいけないこと】
-- フレームワーク名（SDT、PERMA、CBT、ナラティブなど）を出力に含めない。専門用語ではなく日常的な言葉で語ること
+- フレームワーク名（SDT、PERMA、CBT、ナラティブなど）を出力に含めない
 - 全セクションを均等に書かない。今月特に顕著だったテーマに重点を置き、メリハリをつけること
-- 「頑張りましたね」「素晴らしいですね」「充実した1ヶ月でしたね」など漠然とした褒め言葉は禁止。具体的な行動や変化に言及すること
-- 週次レビューに書かれていない事実を捏造しない。推測する場合は「もしかすると〜かもしれません」と明示すること
-- 週次レビューの内容を単に並べ直すだけの要約にしない。週を横断して初めて見える「パターン」や「変化の流れ」を発見すること
-- **太字**、*斜体*、# 見出し、- リストなどMarkdown記法は一切使用禁止。LINEはMarkdown非対応のため、そのまま記号が表示されてしまう。強調したい場合は「」や【】で囲むこと
+- 「頑張りましたね」「充実した1ヶ月でしたね」など漠然とした褒め言葉は禁止
+- 週次レビューに書かれていない事実を捏造しない
+- 週次レビューの内容を単に並べ直すだけの要約にしない
+- Markdown記法は一切使用禁止。強調したい場合は「」や【】で囲むこと
 
 【📝 出力ルール】
-- 全体で700〜1000文字程度（月次レビューなのでやや長め。ただしLINEで読みきれる分量）
-- Markdown記法（**太字**など）は使用禁止。見出しは【 】と絵文字で表現
+- 全体で700〜1000文字程度（月次レビューなのでやや長め）
+- Markdown記法使用禁止。見出しは【 】と絵文字で表現
 - 語りかける二人称「あなた」を使い、温かみのある口調で
 - 週次レビューの引用は「第○週のレビューで触れた〜」のように自然に織り込むこと
-- 分析の根拠を必ずデータに紐づけること（エビデンスベースド）
 
 【📊 月次レビュー構成（この順序で出力）】
 
 1. 📆 ${yearMonth}の振り返り
    - この1ヶ月を一言で表すなら何か（キャッチフレーズ的な導入文を1行）
-   - 月の全体像を2〜3文で俯瞰する。前半と後半で雰囲気の違いがあれば触れる
+   - 月の全体像を2〜3文で俯瞰する
 
 2. 🏆 今月発見された「あなたの強み」
    - 複数週にわたって繰り返し発揮された強みを1〜2個ピックアップ
-   - 先月と比べて強みの使い方に変化や深まりがあれば言及する
    - 結果ではなく行動パターンや姿勢を評価する
 
 3. 📈 1ヶ月のリズムとパターン
-   - ムード推移の全体的な傾向（上向き傾向、波がある、安定しているなど）
-   - 特定の活動や習慣と気分の相関で、月間データから初めて見えるもの
-   - 記録の頻度パターンから読み取れる生活リズムの安定度
+   - ムード推移の全体的な傾向
+   - 特定の活動や習慣と気分の相関
 
 4. 🔄 繰り返し現れたテーマ
-   - 複数の週次レビューで共通して登場したキーワード、課題、または成長テーマ
-   - 月初に出ていた課題が月末までにどう変化（解決・継続・深化）したか
+   - 複数の週次レビューで共通して登場したキーワードや課題
    - まだ解決されていない「持ち越し課題」があれば率直に指摘する
 
 5. 🎯 来月への提案
-   - 今月のパターンから導き出された、来月に試してほしい具体的なアクション1〜2個
    - 「続けるべきこと」と「変えてみること」をそれぞれ1つずつ
-   - 実行しやすい粒度（いつ、何を、どのくらい）で提案する
 `;
 
-  // 前回の月次レビューがあれば追加
   if (lastMonthlyReview) {
-    prompt += `\n【📌 前回の月次レビュー（参考）】\n以下は先月の月次レビュー内容です。先月提案した行動が実行されたか、先月の課題が改善されたか、といった月をまたいだ連続性を意識してください。\n${lastMonthlyReview}\n`;
+    geminiPrompt += `\n【📌 前回の月次レビュー（参考）】\n以下は先月の月次レビュー内容です。\n${lastMonthlyReview}\n`;
   }
 
-  // 月間統計サマリー
-  prompt += `\n【📈 今月の統計サマリー】\n${stats}\n`;
+  geminiPrompt += `\n【📈 今月の統計サマリー】\n${stats}\n`;
 
-  // 蓄積された週次レビュー
   if (weeklyReviews.length > 0) {
-    prompt += `\n【📋 蓄積された週次レビュー（${weeklyReviews.length}件）】\nこれが月次レビューの最も重要な入力です。各週のレビュー内容を横断的に分析し、週を超えて見えるパターンや変化の流れを発見してください。\n※注意: 週次レビューは7日間単位で生成されるため、月初・月末付近のレビューには前月または翌月の数日分の内容が含まれている場合があります。${yearMonth}の内容に重点を置いて分析してください。\n`;
-    weeklyReviews.forEach((review, i) => {
-      prompt += `\n--- 第${i + 1}週 (${review.date}) ---\n${review.text}\n`;
+    geminiPrompt += `\n【📋 蓄積された週次レビュー（${weeklyReviews.length}件）】\nこれが月次レビューの最も重要な入力です。各週のレビュー内容を横断的に分析し、週を超えて見えるパターンや変化の流れを発見してください。\n※注意: 週次レビューは7日間単位で生成されるため、月初・月末付近のレビューには前月または翌月の数日分の内容が含まれている場合があります。${yearMonth}の内容に重点を置いて分析してください。\n`;
+    weeklyReviews.forEach(function(review, i) {
+      geminiPrompt += `\n--- 第${i + 1}週 (${review.date}) ---\n${review.text}\n`;
     });
   } else {
-    prompt += `\n【📋 週次レビューの蓄積】\n蓄積された週次レビューはありません。以下の日記ログのメタデータのみから分析してください。\n`;
+    geminiPrompt += `\n【📋 週次レビューの蓄積】\n蓄積された週次レビューはありません。以下の日記ログから分析してください。\n`;
   }
 
-  // 日記ログのメタデータ
-  prompt += `\n【日記ログメタデータ（${yearMonth}）】\n※基本的に本文は省略されています。タイトル・ムード・タグの推移パターンを分析に活用してください。\n`;
-  logs.forEach(log => {
-    prompt += `[${log.date}] 気分:${log.mood} タグ:${log.tags.join(", ")} タイトル:${log.title}\n`;
+  geminiPrompt += `\n【日記ログ（${yearMonth}）】\n`;
+  logs.forEach(function(log) {
+    geminiPrompt += `[${log.date}] 気分:${log.mood} タグ:${log.tags.join(", ")} タイトル:${log.title}\n`;
+    if (log.body) {
+      geminiPrompt += `本文: ${log.body}\n`;
+    }
   });
 
-  // 月末補完ログ（本文付き）
-  if (supplementLogs && supplementLogs.length > 0) {
-    prompt += `\n【📝 月末の補完データ（本文付き）】\n以下は最後の週次レビュー以降の日記です。週次レビューでカバーされていないため、本文を含めて提供します。月末の分析に特に活用してください。\n`;
-    supplementLogs.forEach(log => {
-      prompt += `---\n[${log.date}] 気分:${log.mood} タグ:${log.tags.join(", ")}\nタイトル: ${log.title}\n本文: ${log.body}\n`;
+  // =====================================================
+  // Claude 向け: systemPrompt（ロール・フレームワーク・ルール）
+  // =====================================================
+  var systemPrompt = `あなたはユーザーの長期的な成長を見守る「パーソナルライフコーチ」です。
+
+<role>
+週次レビューが「1週間のスナップショット」であるのに対し、月次レビューは「1ヶ月の物語」です。
+点と点をつなぎ、本人も気づいていない変化の流れを浮かび上がらせてください。
+週次レビューと日記の全文を横断的に分析し、月を通じて初めて見えるパターンと変化を発見することが目的です。
+</role>
+
+<user_profile>
+以下の情報はログの行動パターンを正しく解釈するための背景知識として使用すること。
+出力でプロフィール内容に直接言及しないこと（「理系のあなたは〜」のような表現は禁止）。
+${userProfile}
+</user_profile>
+
+<analysis_frameworks>
+以下のフレームワークは分析の内部ガイドとして使用すること。出力にフレームワーク名や専門用語を含めないこと。
+
+■ ナラティブ・アイデンティティ
+- 週次レビューの蓄積を「1ヶ月の物語」として読み解く
+- 月の前半と後半で語り口や行動パターンに変化があったか
+- 成長や変化を「物語の転換点」として捉え、言語化する
+
+■ 自己決定理論（月間スケール）
+- 自律性・有能感・関係性の充足パターンを月全体で読む
+- 月間を通じて慢性的に不足している欲求があれば、構造的な改善を提案する
+
+■ 強みの進化
+- 1ヶ月の中で「繰り返し発揮されている強み」を特定する
+- 新しく芽生えた強みや潜在的な強みに注目する
+
+■ 習慣形成
+- 記録の頻度パターンから習慣の定着度を読み取る
+- 習慣が途切れた時期がある場合、その前後からトリガーと障壁を推測する
+
+■ 認知行動療法（長期パターン）
+- 1ヶ月のムード推移から、週次レビューでは見えなかった長期的な認知パターンを検出する
+- 「思考の癖」が繰り返し現れている場合、それに気づかせる問いかけをする
+</analysis_frameworks>
+
+<constraints>
+- フレームワーク名を出力に含めない。専門用語ではなく日常的な言葉で語ること
+- 全セクションを均等に書かない。今月特に顕著だったテーマに重点を置くこと
+- 「頑張りましたね」「充実した1ヶ月でしたね」など漠然とした褒め言葉は禁止
+- 週次レビューや日記に書かれていない事実を捏造しない
+- 週次レビューの内容を単に並べ直すだけの要約にしない。週を横断して初めて見えるパターンを発見すること
+- Markdown記法は一切使用禁止。強調は「」や【】で囲むこと
+</constraints>
+
+<output_rules>
+- 全体で700〜1000文字程度（月次レビューなのでやや長め）
+- 語りかける二人称「あなた」を使い、温かみのある口調で
+- 週次レビューの引用は「第○週のレビューで触れた〜」のように自然に織り込むこと
+- 分析の根拠を必ずデータに紐づけること
+</output_rules>
+
+<output_structure>
+以下の構成で出力すること：
+
+1. 📆 ${yearMonth}の振り返り
+   - この1ヶ月を一言で表すキャッチフレーズ的な導入文を1行
+   - 月の全体像を2〜3文で俯瞰する
+
+2. 🏆 今月発見された「あなたの強み」
+   - 複数週にわたって繰り返し発揮された強みを1〜2個
+   - 結果ではなく行動パターンや姿勢を評価する
+
+3. 📈 1ヶ月のリズムとパターン
+   - ムード推移の全体的な傾向
+   - 特定の活動や習慣と気分の相関で月間データから初めて見えるもの
+
+4. 🔄 繰り返し現れたテーマ
+   - 複数の週次レビューで共通して登場したキーワードや課題
+   - まだ解決されていない「持ち越し課題」があれば率直に指摘する
+
+5. 🎯 来月への提案
+   - 「続けるべきこと」と「変えてみること」をそれぞれ1つずつ
+   - 実行しやすい粒度（いつ、何を、どのくらい）で提案する
+</output_structure>`;
+
+  // =====================================================
+  // Claude 向け: userMessage（データ・コンテキスト）
+  // Anthropicのベストプラクティス: 長文データはプロンプト上部に配置
+  // =====================================================
+  var userMessage = "以下のデータに基づいて" + yearMonth + "の月次レビューを作成してください。\n\n";
+
+  // 週次レビュー（最も重要な入力）を最初に配置
+  if (weeklyReviews.length > 0) {
+    userMessage += "<weekly_reviews>\n";
+    userMessage += "これが月次レビューの最も重要な入力です。各週のレビュー内容を横断的に分析してください。\n";
+    userMessage += "注意: 週次レビューは7日間単位で生成されるため、" + yearMonth + "の内容に重点を置いて分析してください。\n\n";
+    weeklyReviews.forEach(function(review, i) {
+      userMessage += "<review week=\"" + (i + 1) + "\" date=\"" + review.date + "\">\n" + review.text + "\n</review>\n";
     });
+    userMessage += "</weekly_reviews>\n\n";
+  } else {
+    userMessage += "<weekly_reviews>\n蓄積された週次レビューはありません。以下の日記ログから分析してください。\n</weekly_reviews>\n\n";
   }
 
-  return prompt;
-}
+  // 全日記本文（月次では全文を提供）
+  userMessage += "<diary_logs month=\"" + yearMonth + "\">\n";
+  logs.forEach(function(log) {
+    userMessage += '<entry date="' + log.date + '" mood="' + log.mood + '" tags="' + log.tags.join(", ") + '">\n';
+    userMessage += '<title>' + log.title + '</title>\n';
+    if (log.body) {
+      userMessage += '<body>' + log.body + '</body>\n';
+    }
+    userMessage += '</entry>\n';
+  });
+  userMessage += "</diary_logs>\n\n";
+
+  // 統計は末尾に配置
+  userMessage += "<statistics>\n" + stats + "\n</statistics>\n\n";
+
+  if (lastMonthlyReview) {
+    userMessage += "<previous_monthly_review>\n" + lastMonthlyReview + "\n</previous_monthly_review>";
+  }
+
+  return { geminiPrompt: geminiPrompt, systemPrompt: systemPrompt, userMessage: userMessage };
+}

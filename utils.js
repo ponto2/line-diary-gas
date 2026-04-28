@@ -233,18 +233,19 @@ function truncateForLine(text, limit) {
  * @param {string} prompt - Gemini用プロンプト（フォールバック専用）
  * @param {string} [systemPrompt] - Claude用システムプロンプト
  * @param {string} [userMessage] - Claude用ユーザーメッセージ
- * @param {boolean} [useClaude=false] - trueの場合のみClaude Sonnet 4.6を使用（CLAUDE_API_KEY設定時）
+ * @param {boolean} [useClaude=false] - trueの場合のみClaudeを使用（CLAUDE_API_KEY設定時）
+ * @param {string} [claudeModel] - Claudeモデル指定（省略時: claude-sonnet-4-6、長期レビュー時: claude-opus-4-7）
  * @returns {{text: string, error: string}}
  */
-function generateTextWithFallback(prompt, systemPrompt, userMessage, useClaude) {
+function generateTextWithFallback(prompt, systemPrompt, userMessage, useClaude, claudeModel) {
   var errorLog = '';
 
   // useClaude=true かつ Claude APIキーが設定されている場合のみClaudeを使用
   if (useClaude && CLAUDE_API_KEY && systemPrompt && userMessage) {
     try {
-      return { text: callClaudeForText(systemPrompt, userMessage), error: '' };
+      return { text: callClaudeForText(systemPrompt, userMessage, claudeModel), error: '' };
     } catch (e) {
-      errorLog += '[claude-sonnet-4-6] ' + e.message + '\n';
+      errorLog += '[claude-' + (claudeModel || 'sonnet-4-6') + '] ' + e.message + '\n';
       console.warn('Claude APIエラー、Geminiにフォールバック: ' + e.message);
     }
   }
@@ -394,19 +395,192 @@ function filterReviewsByMonth(reviews, monthStart, monthEnd) {
   });
 }
 
+// ============================================================
+// 月次レビュー 蓄積保存（年次レビュー用）
+// ============================================================
+
 /**
- * 前回の月次レビューを保存
+ * 月次レビューを分割保存（最大12件）
+ * MONTHLY_REVIEW_0 〜 MONTHLY_REVIEW_11 に個別保存。最古を削除してシフト。
  */
 function saveLastMonthlyReview(text) {
-  const safeText = (text || "").substring(0, LIMITS.PROPERTY_VALUE_MAX);
-  PROPS.setProperty('LAST_MONTHLY_REVIEW', safeText);
+  // 参照用（累積履歴の最新件がこちら）
+  var safeTextForLast = (text || '').substring(0, LIMITS.PROPERTY_VALUE_MAX);
+  PROPS.setProperty('LAST_MONTHLY_REVIEW', safeTextForLast);
+
+  // 分割保存
+  var safeText = (text || '').substring(0, LIMITS.MONTHLY_REVIEW_TEXT_MAX);
+  var count = parseInt(PROPS.getProperty('MONTHLY_REVIEW_COUNT') || '0', 10);
+  var maxSlots = LIMITS.MONTHLY_REVIEW_HISTORY_MAX;
+  var now = new Date();
+  var entry = JSON.stringify({
+    date: now.toLocaleDateString('ja-JP'),
+    yearMonth: now.getFullYear() + '年' + (now.getMonth() + 1) + '月',
+    text: safeText
+  });
+
+  if (count >= maxSlots) {
+    for (var i = 0; i < maxSlots - 1; i++) {
+      var next = PROPS.getProperty('MONTHLY_REVIEW_' + (i + 1)) || '';
+      PROPS.setProperty('MONTHLY_REVIEW_' + i, next);
+    }
+    PROPS.setProperty('MONTHLY_REVIEW_' + (maxSlots - 1), entry);
+  } else {
+    PROPS.setProperty('MONTHLY_REVIEW_' + count, entry);
+    PROPS.setProperty('MONTHLY_REVIEW_COUNT', String(count + 1));
+  }
 }
 
 /**
- * 前回の月次レビューを取得
+ * 前回の月次レビューを取得（最新件1件・後方互換用）
  */
 function getLastMonthlyReview() {
-  return PROPS.getProperty('LAST_MONTHLY_REVIEW') || "";
+  return PROPS.getProperty('LAST_MONTHLY_REVIEW') || '';
+}
+
+/**
+ * 蓄積された月次レビュー履歴を取得（分割読み出し）
+ * @returns {Array<{date: string, yearMonth: string, text: string}>}
+ */
+function getMonthlyReviewHistory() {
+  var count = parseInt(PROPS.getProperty('MONTHLY_REVIEW_COUNT') || '0', 10);
+  var reviews = [];
+  for (var i = 0; i < count; i++) {
+    var raw = PROPS.getProperty('MONTHLY_REVIEW_' + i);
+    if (raw) {
+      try { reviews.push(JSON.parse(raw)); } catch (e) { /* パース失敗はスキップ */ }
+    }
+  }
+  return reviews;
+}
+
+/**
+ * 蓄積された月次レビューを全削除（年次レビュー送信後に呼び出す）
+ */
+function clearMonthlyReviewHistory() {
+  var maxSlots = LIMITS.MONTHLY_REVIEW_HISTORY_MAX;
+  for (var i = 0; i < maxSlots; i++) {
+    PROPS.deleteProperty('MONTHLY_REVIEW_' + i);
+  }
+  PROPS.deleteProperty('MONTHLY_REVIEW_COUNT');
+}
+
+// ============================================================
+// 四半期レビュー 蓄積保存（半年レビュー用）
+// ============================================================
+
+/**
+ * 四半期レビューを分割保存（最大4件）
+ */
+function saveQuarterlyReview(text, yearQuarter) {
+  var safeText = (text || '').substring(0, LIMITS.MONTHLY_REVIEW_TEXT_MAX);
+  var count = parseInt(PROPS.getProperty('QUARTERLY_REVIEW_COUNT') || '0', 10);
+  var maxSlots = LIMITS.QUARTERLY_REVIEW_HISTORY_MAX;
+  var entry = JSON.stringify({
+    date: new Date().toLocaleDateString('ja-JP'),
+    yearQuarter: yearQuarter || '',
+    text: safeText
+  });
+
+  if (count >= maxSlots) {
+    for (var i = 0; i < maxSlots - 1; i++) {
+      var next = PROPS.getProperty('QUARTERLY_REVIEW_' + (i + 1)) || '';
+      PROPS.setProperty('QUARTERLY_REVIEW_' + i, next);
+    }
+    PROPS.setProperty('QUARTERLY_REVIEW_' + (maxSlots - 1), entry);
+  } else {
+    PROPS.setProperty('QUARTERLY_REVIEW_' + count, entry);
+    PROPS.setProperty('QUARTERLY_REVIEW_COUNT', String(count + 1));
+  }
+}
+
+/**
+ * 蓄積された四半期レビュー履歴を取得
+ * @returns {Array<{date: string, yearQuarter: string, text: string}>}
+ */
+function getQuarterlyReviewHistory() {
+  var count = parseInt(PROPS.getProperty('QUARTERLY_REVIEW_COUNT') || '0', 10);
+  var reviews = [];
+  for (var i = 0; i < count; i++) {
+    var raw = PROPS.getProperty('QUARTERLY_REVIEW_' + i);
+    if (raw) {
+      try { reviews.push(JSON.parse(raw)); } catch (e) {}
+    }
+  }
+  return reviews;
+}
+
+/**
+ * 蓄積された四半期レビューを全削除
+ */
+function clearQuarterlyReviewHistory() {
+  var maxSlots = LIMITS.QUARTERLY_REVIEW_HISTORY_MAX;
+  for (var i = 0; i < maxSlots; i++) {
+    PROPS.deleteProperty('QUARTERLY_REVIEW_' + i);
+  }
+  PROPS.deleteProperty('QUARTERLY_REVIEW_COUNT');
+}
+
+// ============================================================
+// 半年レビュー 蓄積保存（年次レビュー用）
+// ============================================================
+
+/**
+ * 半年レビューを分割保存（最大2件）
+ */
+function saveHalfYearReview(text, yearHalf) {
+  var safeText = (text || '').substring(0, LIMITS.MONTHLY_REVIEW_TEXT_MAX);
+  var count = parseInt(PROPS.getProperty('HALFYEAR_REVIEW_COUNT') || '0', 10);
+  var maxSlots = LIMITS.HALFYEAR_REVIEW_HISTORY_MAX;
+  var entry = JSON.stringify({
+    date: new Date().toLocaleDateString('ja-JP'),
+    yearHalf: yearHalf || '',
+    text: safeText
+  });
+
+  if (count >= maxSlots) {
+    // 最古を削除してシフト
+    PROPS.setProperty('HALFYEAR_REVIEW_0', PROPS.getProperty('HALFYEAR_REVIEW_1') || '');
+    PROPS.setProperty('HALFYEAR_REVIEW_1', entry);
+  } else {
+    PROPS.setProperty('HALFYEAR_REVIEW_' + count, entry);
+    PROPS.setProperty('HALFYEAR_REVIEW_COUNT', String(count + 1));
+  }
+}
+
+/**
+ * 蓄積された半年レビュー履歴を取得
+ * @returns {Array<{date: string, yearHalf: string, text: string}>}
+ */
+function getHalfYearReviewHistory() {
+  var count = parseInt(PROPS.getProperty('HALFYEAR_REVIEW_COUNT') || '0', 10);
+  var reviews = [];
+  for (var i = 0; i < count; i++) {
+    var raw = PROPS.getProperty('HALFYEAR_REVIEW_' + i);
+    if (raw) {
+      try { reviews.push(JSON.parse(raw)); } catch (e) {}
+    }
+  }
+  return reviews;
+}
+
+// ============================================================
+// 年次レビュー 保存
+// ============================================================
+
+/**
+ * 年次レビューを保存（1件のみ）
+ */
+function saveAnnualReview(text) {
+  var safeText = (text || '').substring(0, LIMITS.MONTHLY_REVIEW_TEXT_MAX);
+  PROPS.setProperty('LAST_ANNUAL_REVIEW', safeText);
+}
+
+/**
+ * 年次レビューを取得
+ */
+function getLastAnnualReview() {
+  return PROPS.getProperty('LAST_ANNUAL_REVIEW') || '';
 }
 
 /**

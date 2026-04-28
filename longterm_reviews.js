@@ -91,7 +91,7 @@ function sendHalfYearReview() {
   if (!LINE_USER_ID) return;
   try {
     var now = new Date();
-    var half = now.getMonth() < 6 ? '前半期' : '後半期';
+    var half = now.getMonth() < 6 ? '上半期' : '下半期';
     var yearHalf = now.getFullYear() + '年 ' + half;
 
     var allMonthly = getMonthlyReviewHistory();
@@ -258,11 +258,11 @@ function buildHalfYearReviewPrompt(userProfile, monthlyReviews, quarterlyReviews
     '- 語りかける二人称「あなた」で温かみのある口調\n\n' +
     '【📊 半年レビュー構成】\n' +
     '1. 🗓️ ' + yearHalf + 'の物語（半年を1文で表すキャッチフレーズ）\n' +
-    '2. 📈 6か月間の変化の流れ（前半と後半の比較・転換点）\n' +
+    '2. 📈 6か月間の変化の流れ（上半期と下半期の比較・転換点）\n' +
     '3. 🏆 半年で確立された「あなたらしさ」\n' +
     '4. 💡 繰り返し現れた深層テーマ\n' +
     '5. 🔄 未解決の課題と来期への引き継ぎ\n' +
-    '6. 🎯 後半期・来年への提案\n';
+    '6. 🎯 下半期・来年への提案\n';
 
   if (lastHalfYearReview) {
     geminiPrompt += '\n【前回の半年レビュー（参考）】\n' + lastHalfYearReview + '\n';
@@ -301,7 +301,7 @@ function buildHalfYearReviewPrompt(userProfile, monthlyReviews, quarterlyReviews
     '3. 🏆 半年で確立された「あなたらしさ」\n' +
     '4. 💡 繰り返し現れた深層テーマ\n' +
     '5. 🔄 未解決の課題と来期への引き継ぎ\n' +
-    '6. 🎯 後半期・来年への提案\n' +
+    '6. 🎯 下半期・来年への提案\n' +
     '</output_structure>';
 
   var userMessage = '以下のデータに基づいて' + yearHalf + 'の半年レビューを作成してください。\n\n';

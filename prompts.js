@@ -285,6 +285,7 @@ function fetchMonthlyLogsFromNotion(monthStart, monthEnd) {
 
   // 本文も取得（月次レビューの品質向上のため）
   // Rate Limit 回避のため各取得の間に sleep(100ms) を入れる
+  var DAYS = ["日", "月", "火", "水", "木", "金", "土"];
   return allResults.map(function(page) {
     var props = page.properties;
     var tags = (props["Tags"] && props["Tags"].multi_select || []).map(function(t) { return t.name; });
@@ -296,8 +297,10 @@ function fetchMonthlyLogsFromNotion(monthStart, monthEnd) {
       body = "";
       console.warn("月次ログ本文取得失敗 (" + page.id + "): " + e.message);
     }
+    var dateObj = new Date(page.properties["Date"] && page.properties["Date"].date && page.properties["Date"].date.start || page.created_time);
     return {
-      date: new Date(page.properties["Date"] && page.properties["Date"].date && page.properties["Date"].date.start || page.created_time).toLocaleDateString("ja-JP"),
+      date: dateObj.toLocaleDateString("ja-JP"),
+      dayOfWeek: DAYS[dateObj.getDay()] + "曜",
       title: props["Name"] && props["Name"].title && props["Name"].title[0] && props["Name"].title[0].plain_text || "無題",
       mood: props["Mood"] && props["Mood"].select && props["Mood"].select.name || "不明",
       tags: tags,
@@ -426,6 +429,7 @@ ${userProfile}
 - 「頑張りましたね」「素晴らしいですね」など漠然とした褒め言葉は禁止。必ず具体的な行動を引用すること
 - 日記に書かれていない事実を捏造しない。推測する場合は「もしかすると〜かもしれません」と明示すること
 - **太字**、*斜体*、# 見出し、- リストなどMarkdown記法は一切使用禁止。LINEはMarkdown非対応のため、そのまま記号が表示されてしまう。強調したい場合は「」や【】で囲むこと
+- 日付（○月○日、○/○など数字の日付）で言及することは禁止。必ず「月曜」「火曜」など曜日で言及すること（例: ×「4月21日」→ ○「火曜」）
 
 【📝 出力ルール】
 - 全体で500〜700文字程度（LINEで読みやすい長さ）
@@ -476,7 +480,7 @@ ${userProfile}
 
   geminiPrompt += `\n【日記ログ】\n`;
   logs.forEach(function(log) {
-    geminiPrompt += `---\n[${log.date}] 気分:${log.mood} タグ:${log.tags.join(", ")}\nタイトル: ${log.title}\n本文: ${log.body}\n`;
+    geminiPrompt += `---\n[${log.dayOfWeek || log.date}] 気分:${log.mood} タグ:${log.tags.join(", ")}\nタイトル: ${log.title}\n本文: ${log.body}\n`;
   });
 
   // =====================================================
@@ -525,6 +529,7 @@ ${userProfile}
 - 「頑張りましたね」「素晴らしいですね」など漠然とした褒め言葉は禁止。必ず具体的な行動を引用すること
 - 日記に書かれていない事実を捏造しない。推測する場合は「もしかすると〜かもしれません」と明示すること
 - Markdown記法（**太字**、*斜体*、#見出し、-リストなど）は一切使用禁止。LINEはMarkdown非対応のため、強調は「」や【】で囲むこと
+- 日付（数字の○月○日形式）で言及することは禁止。必ず曜日（「月曜」「火曜」など）で言及すること（例: ×「4月21日」→ ○「火曜」）
 </constraints>
 
 <output_rules>
@@ -575,7 +580,7 @@ ${userProfile}
 
   userMessage += "<diary_logs>\n";
   logs.forEach(function(log) {
-    userMessage += '<entry date="' + log.date + '" mood="' + log.mood + '" tags="' + log.tags.join(", ") + '">\n';
+    userMessage += '<entry date="' + log.date + '" day="' + (log.dayOfWeek || '') + '" mood="' + log.mood + '" tags="' + log.tags.join(", ") + '">\n';
     userMessage += '<title>' + log.title + '</title>\n';
     if (log.body) {
       userMessage += '<body>' + log.body + '</body>\n';
@@ -641,6 +646,7 @@ ${userProfile}
 - 週次レビューに書かれていない事実を捏造しない
 - 週次レビューの内容を単に並べ直すだけの要約にしない
 - Markdown記法は一切使用禁止。強調したい場合は「」や【】で囲むこと
+- 日付（数字の○月○日形式）で言及することは禁止。必ず曜日（「月曜」「火曜」など）や「月初」「月末」「週の前半」などの相対表現で言及すること
 
 【📝 出力ルール】
 - 全体で700〜1000文字程度（月次レビューなのでやや長め）
@@ -687,7 +693,7 @@ ${userProfile}
 
   geminiPrompt += `\n【日記ログ（${yearMonth}）】\n`;
   logs.forEach(function(log) {
-    geminiPrompt += `[${log.date}] 気分:${log.mood} タグ:${log.tags.join(", ")} タイトル:${log.title}\n`;
+    geminiPrompt += `[${log.dayOfWeek || log.date}] 気分:${log.mood} タグ:${log.tags.join(", ")} タイトル:${log.title}\n`;
     if (log.body) {
       geminiPrompt += `本文: ${log.body}\n`;
     }
@@ -742,6 +748,7 @@ ${userProfile}
 - 週次レビューや日記に書かれていない事実を捏造しない
 - 週次レビューの内容を単に並べ直すだけの要約にしない。週を横断して初めて見えるパターンを発見すること
 - Markdown記法は一切使用禁止。強調は「」や【】で囲むこと
+- 日付（数字の○月○日形式）で言及することは禁止。各エントリのday属性にある曜日（「月曜」「火曜」など）や「月初」「月末」「週の前半」などの相対表現で言及すること
 </constraints>
 
 <output_rules>
@@ -795,9 +802,9 @@ ${userProfile}
   }
 
   // 全日記本文（月次では全文を提供）
-  userMessage += "<diary_logs month=\"" + yearMonth + "\">\n";
+  userMessage += '<diary_logs month="' + yearMonth + '">\n';
   logs.forEach(function(log) {
-    userMessage += '<entry date="' + log.date + '" mood="' + log.mood + '" tags="' + log.tags.join(", ") + '">\n';
+    userMessage += '<entry date="' + log.date + '" day="' + (log.dayOfWeek || '') + '" mood="' + log.mood + '" tags="' + log.tags.join(", ") + '">\n';
     userMessage += '<title>' + log.title + '</title>\n';
     if (log.body) {
       userMessage += '<body>' + log.body + '</body>\n';

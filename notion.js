@@ -110,12 +110,15 @@ function fetchWeeklyLogsFromNotion() {
     nextCursor = data.next_cursor;
   }
 
+  const DAYS = ["日", "月", "火", "水", "木", "金", "土"];
   return allResults.map(page => {
     const props = page.properties;
     const tags = (props["Tags"]?.multi_select || []).map(t => t.name);
     const body = fetchPageBodyText(page.id);
+    const dateObj = new Date(page.properties["Date"]?.date?.start || page.created_time);
     return {
-      date: new Date(page.properties["Date"]?.date?.start || page.created_time).toLocaleDateString("ja-JP"),
+      date: dateObj.toLocaleDateString("ja-JP"),
+      dayOfWeek: DAYS[dateObj.getDay()] + "曜",
       title: props["Name"]?.title?.[0]?.plain_text || "無題",
       mood: props["Mood"]?.select?.name || "不明",
       tags: tags,

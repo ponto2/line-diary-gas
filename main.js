@@ -71,8 +71,7 @@ const LIMITS = {
   MONTHLY_REVIEW_HISTORY_MAX: 12,
   /** 蓄積する月次レビュー1件あたりの最大文字数 */
   MONTHLY_REVIEW_TEXT_MAX: 8000,
-  /** 四半期レビュー蓄積の保持件数（半年レビューのために最大4件） */
-  QUARTERLY_REVIEW_HISTORY_MAX: 4,
+  /** 四半期レビュー蓄積の保持件数は廃止 */
   /** 半年レビュー蓄積の保持件数（年次レビューのために最大2件） */
   HALFYEAR_REVIEW_HISTORY_MAX: 2,
   /** PropertiesService 1値あたりの安全な最大文字数 */

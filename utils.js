@@ -273,7 +273,7 @@ function validateRequiredProps() {
 
 /**
  * 前回の週次レビューを保存（分割保存）
- * PropertiesServiceの1プロパティイ9000文字制限を回避するため、
+ * PropertiesServiceの1プロパティ9000バイト制限を回避するため、
  * WEEKLY_REVIEW_0 〜 WEEKLY_REVIEW_4 の個別プロパティに分割保存する。
  * 5件を超えた場合、最古を削除してシフトする。
  */

@@ -12,7 +12,7 @@ function pushLineMessage(text) {
 }
 
 /**
- * 4-b. LINEプッシュ送信（複数メッセージ対応）
+ * LINEプッシュ送信（複数メッセージ対応）
  */
 function pushMessages(messages) {
   const url = "https://api.line.me/v2/bot/message/push";
@@ -35,7 +35,7 @@ function pushMessages(messages) {
 }
 
 /**
- * 4-c. LINE Flex Messageプッシュ送信
+ * LINE Flex Messageプッシュ送信
  */
 function pushFlexMessage(altText, flexContents, quickReply) {
   const msg = {
@@ -77,7 +77,7 @@ function replyFlexMessage(replyToken, altText, flexContents, quickReply) {
 }
 
 /**
- * 5-c. コマンド用 Quick Reply ボタンを生成
+ * コマンド用 Quick Reply ボタンを生成
  */
 function buildCommandQuickReply() {
   const items = [

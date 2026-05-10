@@ -98,7 +98,7 @@ function buildDiaryAnalysisPrompt() {
 }
 
 /**
- * 0. デイリーリマインダー (トリガー実行)
+ * デイリーリマインダー (トリガー実行)
  * 夜に日記が未記録の場合に通知
  */
 function sendDailyReminder() {
@@ -117,7 +117,7 @@ function sendDailyReminder() {
 }
 
 /**
- * 1. 週次レビューのエントリーポイント (トリガー実行)
+ * 週次レビューのエントリーポイント (トリガー実行)
  */
 function sendWeeklyReview() {
   if (!LINE_USER_ID) {
@@ -125,14 +125,14 @@ function sendWeeklyReview() {
     return;
   }
 
-  // 1-1. Notionから過去7日間のログを取得
+  // Notionから過去7日間のログを取得
   const logs = fetchWeeklyLogsFromNotion();
   if (logs.length === 0) {
     pushLineMessage("今週は日記の記録がありませんでした。来週は記録してみましょう！📓");
     return;
   }
 
-  // 1-2. AIへのコンテキスト作成
+  // AIへのコンテキスト作成
   const userProfile = PROPS.getProperty('USER_PROFILE') || "ユーザーは目標達成に向けて努力している人物です。";
   const lastReview = getLastReview();
   const stats = buildLogStatistics(logs);

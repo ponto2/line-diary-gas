@@ -55,7 +55,7 @@ function callGeminiAPI(text, imageBlob, modelName) {
 }
 
 /**
- * 3. Gemini API (テキスト生成版)
+ * Gemini API (テキスト生成版)
  * ※既存のcallGeminiAPIはJSONを強制するため、レビュー用にテキスト版を用意
  */
 function callGeminiForText(prompt, modelName) {

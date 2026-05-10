@@ -1,23 +1,26 @@
 /**
  * ============================================================
  * LINE Diary Bot (GAS)
- * LINE → Gemini → Google Drive → Notion
+ * LINE → Gemini/Claude → Google Drive → Notion
  * ============================================================
  *
  * 【日次記録】 LINEメッセージ/画像 → Gemini解析 → Notion保存
  * 【コマンド】 /today, /yesterday, /stats, /streak, /review,
- *             /monthly, /onthisday, /random, /help
+ *             /monthly, /onthisday, /random, /saveimage, /help
  * 【自動配信】 デイリーリマインダー / 週次レビュー / 月次レビュー
+ *             / 半年レビュー / 年次レビュー
  *
  * ファイル構成:
- *   main.js       - エントリーポイント・定数・メイン処理
- *   notion.js     - Notion API
- *   gemini.js     - Gemini API
- *   line.js       - LINE送受信
- *   commands.js   - コマンドハンドラー
- *   flex.js       - Flex Messageビルダー
- *   prompts.js    - レビュープロンプト・送信ロジック
- *   utils.js      - ユーティリティ関数
+ *   main.js             - エントリーポイント・定数・メイン処理
+ *   notion.js           - Notion API
+ *   gemini.js           - Gemini API
+ *   claude.js           - Claude API (Anthropic)
+ *   line.js             - LINE送受信
+ *   commands.js         - コマンドハンドラー
+ *   flex.js             - Flex Messageビルダー
+ *   prompts.js          - レビュープロンプト・週次/月次レビュー送信
+ *   longterm_reviews.js - 長期レビュー（半年・年次）
+ *   utils.js            - ユーティリティ関数
  *
  * ============================================================
  */

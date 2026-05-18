@@ -58,7 +58,7 @@ const CLAUDE_API_KEY = PROPS.getProperty('CLAUDE_API_KEY');
 const TAGS = ["研究", "開発", "学習", "趣味", "健康", "資産", "食事", "外出", "写真", "その他"];
 const MOODS = ["🤩", "😊", "😐", "😰", "😡"];
 /** Gemini APIモデル候補（優先順） */
-const MODEL_CANDIDATES = ["gemini-3-flash-preview", "gemini-3.1-flash-lite-preview"];
+const MODEL_CANDIDATES = ["gemini-3-flash-preview", "gemini-3.1-flash-lite"];
 
 /** システム共通の制限値 */
 const LIMITS = {

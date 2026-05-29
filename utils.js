@@ -234,7 +234,7 @@ function truncateForLine(text, limit) {
  * @param {string} [systemPrompt] - Claude用システムプロンプト
  * @param {string} [userMessage] - Claude用ユーザーメッセージ
  * @param {boolean} [useClaude=false] - trueの場合のみClaudeを使用（CLAUDE_API_KEY設定時）
- * @param {string} [claudeModel] - Claudeモデル指定（省略時: claude-sonnet-4-6、長期レビュー時: claude-opus-4-7）
+ * @param {string} [claudeModel] - Claudeモデル指定（省略時: AI_MODELS.claude.defaultText、長期レビュー時: AI_MODELS.claude.longTermReview）
  * @returns {{text: string, error: string}}
  */
 function generateTextWithFallback(prompt, systemPrompt, userMessage, useClaude, claudeModel) {
@@ -245,7 +245,7 @@ function generateTextWithFallback(prompt, systemPrompt, userMessage, useClaude, 
     try {
       return { text: callClaudeForText(systemPrompt, userMessage, claudeModel), error: '' };
     } catch (e) {
-      errorLog += '[claude-' + (claudeModel || 'sonnet-4-6') + '] ' + e.message + '\n';
+      errorLog += '[' + (claudeModel || AI_MODELS.claude.defaultText) + '] ' + e.message + '\n';
       console.warn('Claude APIエラー、Geminiにフォールバック: ' + e.message);
     }
   }

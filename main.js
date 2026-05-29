@@ -57,8 +57,18 @@ const CLAUDE_API_KEY = PROPS.getProperty('CLAUDE_API_KEY');
 
 const TAGS = ["研究", "開発", "学習", "趣味", "健康", "資産", "食事", "外出", "写真", "その他"];
 const MOODS = ["🤩", "😊", "😐", "😰", "😡"];
+/** AI APIモデル設定（モデル更新時はここを変更） */
+const AI_MODELS = {
+  gemini: {
+    candidates: ["gemini-3.5-flash", "gemini-3-flash-preview", "gemini-3.1-flash-lite"]
+  },
+  claude: {
+    defaultText: "claude-sonnet-4-6",
+    longTermReview: "claude-opus-4-8"
+  }
+};
 /** Gemini APIモデル候補（優先順） */
-const MODEL_CANDIDATES = ["gemini-3.5-flash", "gemini-3-flash-preview", "gemini-3.1-flash-lite"];
+const MODEL_CANDIDATES = AI_MODELS.gemini.candidates;
 
 /** システム共通の制限値 */
 const LIMITS = {

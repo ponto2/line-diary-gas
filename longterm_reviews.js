@@ -1,10 +1,8 @@
 // ============================================================
 // 長期レビューシステム (半年 / 年次)
-// モデル: Claude Opus 4.7（自動トリガー時）/ Gemini（フォールバック）
+// モデル: Claude Opus 4.8（自動トリガー時）/ Gemini（フォールバック）
 // 四半期レビューは廃止（コスト最適化のため）
 // ============================================================
-
-var CLAUDE_OPUS = 'claude-opus-4-7';
 
 // ============================================================
 // トリガーエントリーポイント
@@ -60,7 +58,7 @@ function sendHalfYearReview() {
     var userProfile = PROPS.getProperty('USER_PROFILE') || 'ユーザーは目標達成に向けて努力している人物です。';
     var lastHalfYear = PROPS.getProperty('LAST_HALFYEAR_REVIEW') || '';
     var prompts = buildHalfYearReviewPrompt(userProfile, recentMonthly, lastHalfYear, yearHalf);
-    var result = generateTextWithFallback(prompts.geminiPrompt, prompts.systemPrompt, prompts.userMessage, true, CLAUDE_OPUS);
+    var result = generateTextWithFallback(prompts.geminiPrompt, prompts.systemPrompt, prompts.userMessage, true, AI_MODELS.claude.longTermReview);
 
     if (result.text) {
       var header = '🗓️ 【' + yearHalf + ' レビュー】\n\n';
@@ -93,7 +91,7 @@ function sendAnnualReview() {
 
     var userProfile = PROPS.getProperty('USER_PROFILE') || 'ユーザーは目標達成に向けて努力している人物です。';
     var prompts = buildAnnualReviewPrompt(userProfile, allMonthly, allHalfYear, lastAnnual, year);
-    var result = generateTextWithFallback(prompts.geminiPrompt, prompts.systemPrompt, prompts.userMessage, true, CLAUDE_OPUS);
+    var result = generateTextWithFallback(prompts.geminiPrompt, prompts.systemPrompt, prompts.userMessage, true, AI_MODELS.claude.longTermReview);
 
     if (result.text) {
       var header = '🎊 【' + year + ' 年次レビュー】\n\n';

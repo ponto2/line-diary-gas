@@ -11,13 +11,13 @@
  *
  * @param {string} systemPrompt - システムプロンプト（ロール・フレームワーク・ルール）
  * @param {string} userMessage  - ユーザーメッセージ（データ・ログ・統計）
- * @param {string} [model]      - 使用するモデル（省略時: claude-sonnet-4-6）
- *                                長期レビュー時は 'claude-opus-4-7' を指定
+ * @param {string} [model]      - 使用するモデル（省略時: AI_MODELS.claude.defaultText）
+ *                                長期レビュー時は AI_MODELS.claude.longTermReview を指定
  * @returns {string} 生成テキスト
  * @throws {Error} APIエラー時
  */
 function callClaudeForText(systemPrompt, userMessage, model) {
-  var claudeModel = model || 'claude-sonnet-4-6';
+  var claudeModel = model || AI_MODELS.claude.defaultText;
   var url = 'https://api.anthropic.com/v1/messages';
 
   var payload = {

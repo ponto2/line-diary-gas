@@ -52,7 +52,7 @@ const NOTION_DB_ID = PROPS.getProperty('NOTION_DB_ID');
 const GEMINI_API_KEY = PROPS.getProperty('GEMINI_API_KEY');
 const DRIVE_FOLDER_ID = PROPS.getProperty('DRIVE_FOLDER_ID');
 const LINE_USER_ID = PROPS.getProperty('LINE_USER_ID');
-/** Claude API キー（オプション）: 設定するとレビュー自動生成にSonnet 4.6を使用 */
+/** Claude API キー（オプション）: 設定するとレビュー自動生成にClaudeを使用 */
 const CLAUDE_API_KEY = PROPS.getProperty('CLAUDE_API_KEY');
 
 const TAGS = ["研究", "開発", "学習", "趣味", "健康", "資産", "食事", "外出", "写真", "その他"];
@@ -64,7 +64,7 @@ const AI_MODELS = {
   },
   claude: {
     defaultText: "claude-sonnet-4-6",
-    longTermReview: "claude-opus-4-8"
+    longTermReview: "claude-opus-4-6"
   }
 };
 /** Gemini APIモデル候補（優先順） */

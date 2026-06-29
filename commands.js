@@ -46,6 +46,14 @@ function handleCommand(text, replyToken) {
       handleRandomCommand(replyToken);
       break;
 
+    case '/search':
+      handleSearchCommand(text, replyToken);
+      break;
+
+    case '/cancel':
+      handleCancelCommand(replyToken);
+      break;
+
     case '/saveimage':
       handleSaveImageCommand(replyToken);
       break;
@@ -314,6 +322,56 @@ function handleRandomCommand(replyToken) {
     console.error("random command error:", e);
     replyLineMessage(replyToken, "⚠️ エラーが発生しました: " + e.message, buildCommandQuickReply());
   }
+}
+
+/**
+ * /search コマンド: キーワードで過去の日記を検索
+ * 例: /search 研究
+ */
+function handleSearchCommand(text, replyToken) {
+  try {
+    const query = text.replace(/^\/search\s*/i, '').trim();
+    if (!query) {
+      startSearchMode();
+      replyLineMessage(replyToken, "🔍 検索したい言葉を送ってください。\n「キャンセル」または /cancel でやめられます。", buildSearchModeQuickReply());
+      return;
+    }
+
+    executeSearchQuery(query, replyToken);
+  } catch (e) {
+    console.error("search command error:", e);
+    replyLineMessage(replyToken, "⚠️ 検索に失敗しました: " + e.message, buildCommandQuickReply());
+  }
+}
+
+function executeSearchQuery(query, replyToken) {
+  const safeQuery = String(query || '').trim();
+  if (!safeQuery) {
+    startSearchMode();
+    replyLineMessage(replyToken, "🔍 検索したい言葉を送ってください。\n「キャンセル」または /cancel でやめられます。", buildSearchModeQuickReply());
+    return;
+  }
+
+  const results = searchLogsFromNotion(safeQuery);
+  if (results.length === 0) {
+    replyLineMessage(replyToken, "🔍 「" + safeQuery + "」に一致する記録は見つかりませんでした。", buildCommandQuickReply());
+    return;
+  }
+
+  const messages = results.map(function (log, i) {
+    return {
+      type: "flex",
+      altText: "🔍 検索結果: " + log.title,
+      contents: buildPastLogFlex(log, "🔍 検索結果 " + (i + 1) + "/" + results.length)
+    };
+  });
+  messages[messages.length - 1].quickReply = buildCommandQuickReply();
+  replyMessages(replyToken, messages);
+}
+
+function handleCancelCommand(replyToken) {
+  clearSearchMode();
+  replyLineMessage(replyToken, "🔍 検索をキャンセルしました。", buildCommandQuickReply());
 }
 
 /**

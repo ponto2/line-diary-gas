@@ -205,6 +205,89 @@ function fetchLogsByDateRange(start, end, includeBody) {
 }
 
 /**
+ * キーワードで日記を検索する。
+ * 新しい順に一定件数を走査し、タイトル・タグ・本文のいずれかに一致するログを返す。
+ * @param {string} keyword
+ * @returns {Array<DiaryLog>}
+ */
+function searchLogsFromNotion(keyword) {
+  const query = normalizeSearchText(keyword);
+  if (!query) return [];
+
+  const url = `https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`;
+  const results = [];
+  let scanned = 0;
+  let hasMore = true;
+  let nextCursor = undefined;
+
+  while (hasMore && scanned < LIMITS.SEARCH_SCAN_LIMIT && results.length < LIMITS.SEARCH_RESULT_MAX) {
+    const remaining = LIMITS.SEARCH_SCAN_LIMIT - scanned;
+    const payload = {
+      sorts: [{ property: "Date", direction: "descending" }],
+      page_size: Math.min(remaining, 20)
+    };
+    if (nextCursor) payload.start_cursor = nextCursor;
+
+    const response = UrlFetchApp.fetch(url, {
+      method: 'post',
+      headers: {
+        'Authorization': `Bearer ${NOTION_TOKEN}`,
+        'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28'
+      },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    });
+
+    if (response.getResponseCode() !== 200) {
+      throw new Error(`Notion検索エラー: ${response.getContentText().substring(0, 200)}`);
+    }
+
+    const data = JSON.parse(response.getContentText());
+    const pages = data.results || [];
+    scanned += pages.length;
+    hasMore = data.has_more === true;
+    nextCursor = data.next_cursor;
+
+    for (const page of pages) {
+      if (results.length >= LIMITS.SEARCH_RESULT_MAX) break;
+
+      const props = page.properties;
+      const tags = (props["Tags"]?.multi_select || []).map(t => t.name);
+      const title = props["Name"]?.title?.[0]?.plain_text || "無題";
+      const metaText = normalizeSearchText([title].concat(tags).join(" "));
+
+      let bodyResult = null;
+      let matched = metaText.indexOf(query) !== -1;
+      if (!matched) {
+        bodyResult = fetchPageBodyAndImageUrl(page.id);
+        matched = normalizeSearchText(bodyResult.body).indexOf(query) !== -1;
+      }
+
+      if (matched) {
+        if (!bodyResult) bodyResult = fetchPageBodyAndImageUrl(page.id);
+        const d = new Date(props["Date"]?.date?.start || page.created_time);
+        results.push({
+          date: d.toLocaleDateString("ja-JP"),
+          time: `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`,
+          title: title,
+          mood: props["Mood"]?.select?.name || "😐",
+          tags: tags,
+          body: bodyResult.body,
+          imageUrl: bodyResult.imageUrl
+        });
+      }
+    }
+  }
+
+  return results;
+}
+
+function normalizeSearchText(text) {
+  return String(text || '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+/**
  * Notionページの本文テキストとDrive画像URLを取得
  * リンクブロック（Google Drive）は本文から除外し、imageUrlとして返す
  * @param {string} pageId - NotionページID

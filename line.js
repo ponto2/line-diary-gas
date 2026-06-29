@@ -87,9 +87,18 @@ function buildCommandQuickReply() {
     { type: "action", action: { type: "message", label: "📊 統計", text: "/stats" } },
     { type: "action", action: { type: "message", label: "🔥 連続", text: "/streak" } },
     { type: "action", action: { type: "message", label: "🧐 レビュー", text: "/review" } },
+    { type: "action", action: { type: "message", label: "🔍 検索", text: "/search" } },
     { type: "action", action: { type: "message", label: "🕰️ 1年前", text: "/onthisday" } }
   ];
   return { items: items };
+}
+
+function buildSearchModeQuickReply() {
+  return {
+    items: [
+      { type: "action", action: { type: "message", label: "キャンセル", text: "キャンセル" } }
+    ]
+  };
 }
 
 /**

@@ -6,7 +6,7 @@
  *
  * 【日次記録】 LINEメッセージ/画像 → Gemini解析 → Notion保存
  * 【コマンド】 /today, /yesterday, /stats, /streak, /review,
- *             /monthly, /onthisday, /random, /saveimage, /help
+ *             /monthly, /onthisday, /random, /search, /saveimage, /help
  * 【自動配信】 デイリーリマインダー / 週次レビュー / 月次レビュー
  *             / 半年レビュー / 年次レビュー
  *
@@ -91,6 +91,12 @@ const LIMITS = {
   PROPERTY_VALUE_MAX: 2000,
   /** /onthisday で遡る最大年数 */
   ONTHISDAY_YEARS: 5,
+  /** /search で返す最大件数（LINEの一括返信上限に合わせる） */
+  SEARCH_RESULT_MAX: 5,
+  /** /search で新しい順に走査する最大ページ数 */
+  SEARCH_SCAN_LIMIT: 60,
+  /** 検索モードのタイムアウト（ミリ秒）: 10分 */
+  SEARCH_MODE_TIMEOUT: 10 * 60 * 1000,
   /** 写真待機のタイムアウト（ミリ秒）: 30分 */
   PENDING_IMAGE_TIMEOUT: 30 * 60 * 1000,
 };
@@ -126,6 +132,7 @@ function doPost(e) {
       // A. テキスト
       if (msg.type === 'text') {
         const pending = getPendingImage();
+        const searchMode = getSearchMode();
 
         if (msg.text.startsWith('/')) {
           // コマンド: /saveimage は待機画像をハンドラ側で処理するのでスキップ
@@ -133,8 +140,28 @@ function doPost(e) {
             finalizePendingImage(pending);
             try { pushLineMessage("📷 待機中の写真を写真日記として記録しました"); } catch (pe) { console.error("Push通知失敗:", pe); }
           }
+          if (searchMode && msg.text.trim().toLowerCase() !== '/search') {
+            clearSearchMode();
+          }
           handleCommand(msg.text.trim(), replyToken);
         } else {
+          if (searchMode) {
+            const elapsed = Date.now() - searchMode.timestamp;
+            if (elapsed <= LIMITS.SEARCH_MODE_TIMEOUT) {
+              if (isSearchCancelText(msg.text)) {
+                clearSearchMode();
+                replyLineMessage(replyToken, "🔍 検索をキャンセルしました。", buildCommandQuickReply());
+                return;
+              }
+
+              clearSearchMode();
+              executeSearchQuery(msg.text.trim(), replyToken);
+              return;
+            }
+
+            clearSearchMode();
+          }
+
           // 通常テキスト: 待機画像があれば結合
           if (pending) {
             const elapsed = Date.now() - pending.timestamp;
@@ -155,6 +182,10 @@ function doPost(e) {
       }
       // B. 画像: Drive保存して待機状態にする
       else if (msg.type === 'image') {
+        if (getSearchMode()) {
+          clearSearchMode();
+        }
+
         // 既に待機中の画像があれば先に単独確定
         const existing = getPendingImage();
         if (existing) {
@@ -312,6 +343,38 @@ function savePendingImage(url, name) {
 /** 待機画像をクリア */
 function clearPendingImage() {
   PROPS.deleteProperty('PENDING_IMAGE');
+}
+
+// ============================================================
+// 検索モード管理 (SEARCH_MODE)
+// ============================================================
+
+function getSearchMode() {
+  const raw = PROPS.getProperty('SEARCH_MODE');
+  if (!raw) return null;
+  try {
+    const mode = JSON.parse(raw);
+    if (!mode || !mode.timestamp) return null;
+    return mode;
+  } catch (e) {
+    PROPS.deleteProperty('SEARCH_MODE');
+    return null;
+  }
+}
+
+function startSearchMode() {
+  PROPS.setProperty('SEARCH_MODE', JSON.stringify({
+    timestamp: Date.now()
+  }));
+}
+
+function clearSearchMode() {
+  PROPS.deleteProperty('SEARCH_MODE');
+}
+
+function isSearchCancelText(text) {
+  const normalized = String(text || '').trim().toLowerCase();
+  return ['キャンセル', 'やめる', '中止', 'cancel', '/cancel'].indexOf(normalized) !== -1;
 }
 
 /**

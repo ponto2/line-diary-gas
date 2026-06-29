@@ -605,6 +605,7 @@ function buildHelpFlex() {
     { cmd: "/monthly",   icon: "📅", desc: "月次レビューを生成" },
     { cmd: "/onthisday", icon: "🕰️", desc: "過去の同じ日の記録" },
     { cmd: "/random",    icon: "🎲", desc: "ランダムに過去の記録" },
+    { cmd: "/search",    icon: "🔍", desc: "キーワードで記録を検索" },
     { cmd: "/help",      icon: "❓", desc: "このヘルプを表示" }
   ];
 

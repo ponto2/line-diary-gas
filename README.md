@@ -11,12 +11,13 @@ Google Gemini API を活用し、送信内容から「タイトル」「気分�
 * **Notion自動同期:** LINEのメッセージ（テキスト・画像）をNotionのデータベースに自動で蓄積。
 * **AI解析 (Gemini):** 日記の本文や画像をAIが解析し、適切な「タイトル」「気分アイコン」「タグ」を自動で付与。モデルはフォールバック対応（`gemini-3-flash-preview` → `gemini-3.1-flash-lite-preview`）。
 * **画像管理:** 送信された写真はGoogle Driveに保存され、Notionには閲覧用のDriveリンクが自動記載されます。
-* **写真+テキスト結合:** 写真を送信した後にテキストを送ると、1つの日記エントリとして結合記録されます（30分以内）。テキストなしでもQuick Replyからワンタップで写真日記として記録可能です。
+* **写真+テキスト結合:** 写真を送信した後にテキストを送ると、1つの日記エントリとして結合記録されます（最後の写真から30分以内）。複数枚の写真もまとめて1件になります。テキストなしでもQuick Replyからワンタップで写真日記として記録可能です。写真だけ送って30分以上たった場合は、写真を送った時刻の日記として記録されます。
+* **本人専用:** `LINE_USER_ID` に設定したユーザー以外からのメッセージは無視します（友だち追加した第三者が日記を読んだり書き込んだりすることはできません）。
 * **Flex Message応答:** 記録成功時にタイトル・ムード・タグをカード形式で返信。
 
 ### 🔁 自動レビュー (トリガー実行)
-* **週次レビュー:** 毎週指定した日時に、過去7日分のログをAIが心理学フレームワークに基づいて分析。統計カードとともにLINEへプッシュ通知。
-* **月次レビュー:** 月末に自動実行。蓄積された週次レビューと月間ログを横断的にAIが分析し、長期的な傾向や成長パターンを報告。
+* **週次レビュー:** 毎週指定した日時に、前回の週次レビュー以降（初回は過去7日分）のログをAIが心理学フレームワークに基づいて分析。統計カードとともにLINEへプッシュ通知。レビュー実行後に書いた日記は次回のレビューに含まれます。
+* **月次レビュー:** 月末に自動実行。前回の月次レビュー以降の月間ログと蓄積された週次レビューを横断的にAIが分析し、長期的な傾向や成長パターンを報告。
 * **半年レビュー:** 半年末（6/30、12/31）に自動実行。蓄積された月次レビューをもとにAIが半年間の変化の流れと深層テーマを分析。
 * **年次レビュー:** 年末（12/31）に自動実行。月次・半年レビューを統合し、1年間を「物語」として総括する特別なレビュー。
 * **デイリーリマインダー:** 夜の時点で当日の日記が未記録の場合に、やさしくリマインド通知。
@@ -90,13 +91,14 @@ GASエディタの「プロジェクトの設定（歯車アイコン）」 > �
 | `NOTION_TOKEN` | 必須 | Notionインテグレーションのトークン |
 | `NOTION_DB_ID` | 必須 | 保存先のNotionデータベースID |
 | `DRIVE_FOLDER_ID` | 必須 | 手順2で作ったフォルダのID |
-| `LINE_USER_ID` | **必須** | プッシュ通知の宛先（あなたのLINEユーザーID） |
+| `LINE_USER_ID` | **必須** | あなたのLINEユーザーID。このIDからのメッセージだけを処理し、プッシュ通知の宛先にもなります |
+| `WEBHOOK_TOKEN` | 推奨 | Webhook URLに付ける合言葉（推測されにくい長いランダム文字列）。設定すると、URL末尾の `?token=` が一致しないリクエストを破棄します（手順7参照） |
 | `CLAUDE_API_KEY` | 任意 | Anthropic APIキー（設定するとレビュー自動生成にClaudeを使用） |
 | `USER_PROFILE` | 推奨 | AIに教えるあなたの前提情報（詳細は後述） |
 
 > **💡 自動管理されるプロパティ**
 > 以下のプロパティはボットが自動で管理するため、手動設定は不要です。
-> `STREAK_COUNT`, `STREAK_LAST_DATE`, `STREAK_START_DATE`, `STREAK_TOTAL_DAYS`, `DIARY_START_DATE`, `PENDING_IMAGE`, `LAST_WEEKLY_REVIEW`, `WEEKLY_REVIEW_COUNT`, `WEEKLY_REVIEW_0`〜`4`, `LAST_MONTHLY_REVIEW`, `MONTHLY_REVIEW_COUNT`, `MONTHLY_REVIEW_0`〜`11`, `LAST_HALFYEAR_REVIEW`, `HALFYEAR_REVIEW_COUNT`, `HALFYEAR_REVIEW_0`〜`1`, `LAST_ANNUAL_REVIEW`
+> `STREAK_COUNT`, `STREAK_LAST_DATE`, `STREAK_START_DATE`, `STREAK_TOTAL_DAYS`, `DIARY_START_DATE`, `PENDING_IMAGE`, `SEARCH_MODE`, `LAST_WEEKLY_REVIEW`, `LAST_WEEKLY_REVIEW_AT`, `WEEKLY_REVIEW_COUNT`, `WEEKLY_REVIEW_0`〜`4`, `LAST_MONTHLY_REVIEW`, `LAST_MONTHLY_REVIEW_AT`, `MONTHLY_REVIEW_COUNT`, `MONTHLY_REVIEW_0`〜`11`, `LAST_HALFYEAR_REVIEW`, `HALFYEAR_REVIEW_COUNT`, `HALFYEAR_REVIEW_0`〜`1`, `LAST_ANNUAL_REVIEW`, `REVIEW_DONE_MONTHLY`, `REVIEW_DONE_HALFYEAR`, `REVIEW_DONE_ANNUAL`, `REVIEW_RUN_STARTED_AT`
 
 ### 5. Notionデータベースの設定（重要）
 Notionデータベースを新規作成し、以下のプロパティ名と選択肢を**一字一句正確に**設定してください。これらが一致していないと保存に失敗します。
@@ -129,35 +131,19 @@ GASエディタ左メニューの「トリガー（時計アイコン）」か�
 | 曜日 | 日曜日（または任意の曜日） |
 | 時刻 | 20:00 〜 21:00（または任意の時間） |
 
-#### 月次レビュー（月末自動実行）
+> **💡** 週次レビューは「前回の週次レビュー以降」の日記を対象にするため、実行後（例: 日曜の深夜）に書いた日記も翌週のレビューに含まれます。
+
+#### 期末レビュー（月次・半年・年次）
 | 項目 | 設定値 |
 | --- | --- |
-| 実行する関数 | **`checkAndSendMonthlyReview`** |
+| 実行する関数 | **`checkAndSendPeriodReviews`** |
 | イベントのソース | 時間主導型 |
 | タイプ | 日ベースのタイマー |
 | 時刻 | 21:00 〜 22:00（または任意の時間） |
 
-> **💡** `checkAndSendMonthlyReview` は毎日実行されますが、月末（翌日が1日）のときだけ月次レビューを送信します。
-
-#### 半年レビュー（半年末自動実行）
-| 項目 | 設定値 |
-| --- | --- |
-| 実行する関数 | **`checkAndSendHalfYearReview`** |
-| イベントのソース | 時間主導型 |
-| タイプ | 日ベースのタイマー |
-| 時刻 | 21:00 〜 22:00（または任意の時間） |
-
-> **💡** `checkAndSendHalfYearReview` は毎日実行されますが、半年末（6/30、12/31）のときだけ半年レビューを送信します。
-
-#### 年次レビュー（年末自動実行）
-| 項目 | 設定値 |
-| --- | --- |
-| 実行する関数 | **`checkAndSendAnnualReview`** |
-| イベントのソース | 時間主導型 |
-| タイプ | 日ベースのタイマー |
-| 時刻 | 22:00 〜 23:00（または任意の時間） |
-
-> **💡** `checkAndSendAnnualReview` は毎日実行されますが、年末（12/31）のときだけ年次レビューを送信します。年次レビュー送信後、月次レビューの蓄積は自動でクリアされます。
+> **💡** `checkAndSendPeriodReviews` は毎日実行されますが、月末のときだけ動作し、**月次 → 半年（6/30、12/31）→ 年次（12/31）** の順に1つの実行の中でレビューを送信します。半年・年次レビューは直前に作った月次レビューを材料にするため、この順番を守る必要があります。年次レビュー送信後、月次レビューの蓄積は自動でクリアされます。
+>
+> 以前のバージョンの `checkAndSendMonthlyReview` / `checkAndSendHalfYearReview` / `checkAndSendAnnualReview` のトリガーはそのまま動きます（中身は同じ処理を呼びます）。複数設定されていても同じレビューが二重に届くことはありませんが、整理する場合は1つだけ残してください。
 
 #### デイリーリマインダー
 | 項目 | 設定値 |
@@ -173,6 +159,10 @@ GASエディタ左メニューの「トリガー（時計アイコン）」か�
 3. アクセスできるユーザー: **全員**
 4. 「デプロイ」を実行し、発行された **ウェブアプリURL** をコピーします。
 5. LINE Developersコンソールの「Messaging API設定」にて、**Webhook URL** に上記URLを貼り付け、「Webhookの利用」をオンにします。
+   * `WEBHOOK_TOKEN` を設定した場合は、URLの末尾に `?token=<WEBHOOK_TOKEN の値>` を付けてください（例: `https://script.google.com/macros/s/xxxx/exec?token=abcd1234...`）。
+6. LINEで何か送って記録されない場合は、GASエディタの「実行数」でログを確認してください。`LINE_USER_ID と一致しない送信元` と出ている場合は、そこに表示されたIDが `LINE_USER_ID` と一致しているか確認してください。
+
+> **🔒 セキュリティについて:** GASの仕様上、LINEのWebhook署名（`x-line-signature`）は検証できません。そのため、ボットは `LINE_USER_ID` 本人以外のメッセージを無視し、`WEBHOOK_TOKEN` を設定した場合はURLの合言葉も照合します。Webhook URLは他人に教えないでください。
 
 ---
 
@@ -194,8 +184,8 @@ GASエディタ左メニューの「トリガー（時計アイコン）」か�
 
 | レビュー | 頻度 | 主な入力 | AIモデル（自動） | 文字数目安 |
 | --- | --- | --- | --- | --- |
-| 週次 | 毎週 | 日記ログ7日分 | Claude Sonnet 4.6 | 500〜700字 |
-| 月次 | 月末 | 週次レビュー + 全日記本文 | Claude Sonnet 4.6 | 700〜1000字 |
+| 週次 | 毎週 | 前回以降の日記ログ（約7日分） | Claude Sonnet 4.6 | 500〜700字 |
+| 月次 | 月末 | 週次レビュー + 前回以降の全日記本文 | Claude Sonnet 4.6 | 700〜1000字 |
 | 半年 | 半年末 | 月次レビュー×6 | Claude Opus 4.6 | 1000〜1500字 |
 | 年次 | 年末 | 月次×12 + 半年×2 | Claude Opus 4.6 | 1200〜2000字 |
 

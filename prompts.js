@@ -105,6 +105,13 @@ function sendDailyReminder() {
   if (!LINE_USER_ID) return;
 
   try {
+    // 写真だけ送って放置した場合: タイムアウト済みなら送信時刻の日付で写真日記として確定する
+    flushStalePendingImage();
+    if (getPendingImage()) {
+      console.log("写真の待機中（メモ入力待ち）のため、リマインダーを省略します。");
+      return;
+    }
+
     const logs = fetchTodayLogsFromNotion();
     if (logs.length === 0) {
       pushLineMessage("こんばんは！🌙\n今日はまだ日記が記録されていないようです。\n\n一日の終わりに、今日の出来事や気持ちを少しだけ残してみませんか？✍️");
@@ -118,6 +125,8 @@ function sendDailyReminder() {
 
 /**
  * 週次レビューのエントリーポイント (トリガー実行)
+ * 対象期間: 前回の週次レビューの集計終了時刻〜現在（初回は直近7日間）
+ * 前回の続きから集計するので、トリガー実行後に書いた日記も次回のレビューに含まれる。
  */
 function sendWeeklyReview() {
   if (!LINE_USER_ID) {
@@ -125,10 +134,26 @@ function sendWeeklyReview() {
     return;
   }
 
-  // Notionから過去7日間のログを取得
-  const logs = fetchWeeklyLogsFromNotion();
+  // タイムアウト済みの待機写真を先に確定（後から過去日付で記録されて集計から漏れるのを防ぐ）
+  flushStalePendingImage();
+
+  const end = new Date();
+  const defaultStart = startOfDay(end);
+  defaultStart.setDate(defaultStart.getDate() - 6);
+  const start = getReviewWindowStart('LAST_WEEKLY_REVIEW_AT', defaultStart, LIMITS.WEEKLY_REVIEW_WINDOW_MAX_DAYS, end);
+
+  // Notionから対象期間のログを取得（取得失敗を「記録なし」と誤報しない）
+  let logs;
+  try {
+    logs = fetchWeeklyLogsFromNotion(start, end);
+  } catch (e) {
+    console.error("週次レビュー: Notion取得エラー:", e);
+    notifyOwner("⚠️ Notionから日記を取得できなかったため、週次レビューを中止しました。\n" + e.message);
+    return;
+  }
   if (logs.length === 0) {
     pushLineMessage("今週は日記の記録がありませんでした。来週は記録してみましょう！📓");
+    PROPS.setProperty('LAST_WEEKLY_REVIEW_AT', end.toISOString());
     return;
   }
 
@@ -145,64 +170,66 @@ function sendWeeklyReview() {
     const header = "📅 【週次レビュー】\n\n";
     const safeReview = truncateForLine(result.text, 5000 - header.length);
 
-    const statsMsg = { type: 'flex', altText: '📊 今週の統計', contents: buildStatsFlex(logs) };
+    const statsMsg = { type: 'flex', altText: '📊 今週の統計', contents: buildStatsFlex(logs, start, end) };
     statsMsg.quickReply = buildCommandQuickReply();
     const messages = [
       { type: 'text', text: header + safeReview },
       statsMsg
     ];
     pushMessages(messages);
-    saveLastReview(result.text);
+    PROPS.setProperty('LAST_WEEKLY_REVIEW_AT', end.toISOString());
+    try {
+      saveLastReview(result.text);
+    } catch (e) {
+      console.error("週次レビューの保存に失敗:", e);
+    }
   } else {
     pushLineMessage("週次レビューの生成に失敗しました。\n" + result.error);
   }
 }
 
 /**
- * 月次レビューのトリガーエントリーポイント
- * 毎日実行され、月末（明日が1日）のみ sendMonthlyReview を実行する
- * GASトリガーにはこの関数を「日ベース」で設定する
- */
-function checkAndSendMonthlyReview() {
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  if (tomorrow.getDate() === 1) {
-    // 明日が1日 = 今日が月末
-    sendMonthlyReview();
-  }
-}
-
-/**
- * 月次レビューを生成・送信する
- * 当月の1日から月末（実行時点）までを対象とする
+ * 月次レビューを生成・送信する（月末に checkAndSendPeriodReviews から呼ばれる）
+ * 対象期間: 前回の月次レビューの集計終了時刻〜現在（初回は当月1日〜現在）
+ * 前回の続きから集計するので、前月末のトリガー実行後に書いた日記も漏れない。
+ * @returns {boolean} 完了したか（false の場合は同日の別トリガーで再試行される）
  */
 function sendMonthlyReview() {
   if (!LINE_USER_ID) {
     console.log("LINE_USER_ID未設定のため月次レビューをスキップします");
-    return;
+    return false;
   }
 
-  // 対象範囲: 当月1日〜現在
   const now = new Date();
-  const targetMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const calendarMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const targetMonthStart = getReviewWindowStart('LAST_MONTHLY_REVIEW_AT', calendarMonthStart, LIMITS.MONTHLY_REVIEW_WINDOW_MAX_DAYS, now);
   const targetMonthEnd = now;
 
-  // 1. 蓄積された週次レビューを取得し、当月のもののみフィルタ
+  // 1. 蓄積された週次レビューを取得し、対象期間のもののみフィルタ（保存日は日付単位なので開始日の0時から）
   const allWeeklyReviews = getWeeklyReviewHistory();
-  const weeklyReviews = filterReviewsByMonth(allWeeklyReviews, targetMonthStart, targetMonthEnd);
+  const weeklyReviews = filterReviewsByMonth(allWeeklyReviews, startOfDay(targetMonthStart), targetMonthEnd);
 
-  // 2. 当月のログメタデータを取得（本文は省略してトークン節約）
-  const logs = fetchMonthlyLogsFromNotion(targetMonthStart, targetMonthEnd);
+  // 2. 対象期間のログを本文付きで取得（取得失敗を「記録なし」と誤報しない）
+  let logs;
+  try {
+    logs = fetchMonthlyLogsFromNotion(targetMonthStart, targetMonthEnd);
+  } catch (e) {
+    console.error("月次レビュー: Notion取得エラー:", e);
+    notifyOwner("⚠️ Notionから日記を取得できなかったため、月次レビューを中止しました。\n" + e.message);
+    return false;
+  }
   if (logs.length === 0 && weeklyReviews.length === 0) {
     pushLineMessage("今月は日記の記録と週次レビューの蓄積がありませんでした。来月は記録してみましょう！📓");
-    return;
+    PROPS.setProperty('LAST_MONTHLY_REVIEW_AT', now.toISOString());
+    return true;
   }
 
   // 3. コンテキスト作成
   const userProfile = PROPS.getProperty('USER_PROFILE') || "ユーザーは目標達成に向けて努力している人物です。";
   const lastMonthlyReview = getLastMonthlyReview();
   const stats = buildLogStatistics(logs);
-  const targetYearMonth = targetMonthStart.getFullYear() + "年" + (targetMonthStart.getMonth() + 1) + "月";
+  // 開始が前月末になる場合があるため、対象月は実行日（月末）から決める
+  const targetYearMonth = now.getFullYear() + "年" + (now.getMonth() + 1) + "月";
 
   // 全日記本文はfetchMonthlyLogsFromNotion内で取得済みのためsupplementLogsは不要
   const { geminiPrompt, systemPrompt, userMessage } = buildMonthlyReviewPrompt(
@@ -223,90 +250,31 @@ function sendMonthlyReview() {
       statsMsg
     ];
     pushMessages(messages);
-    saveLastMonthlyReview(result.text);
+    PROPS.setProperty('LAST_MONTHLY_REVIEW_AT', now.toISOString());
+    try {
+      saveLastMonthlyReview(result.text);
+    } catch (e) {
+      console.error("月次レビューの保存に失敗:", e);
+    }
 
     // 月次レビュー送信後、週次レビュー蓄積をクリア（分割保存対応）
     clearWeeklyReviewHistory();
-  } else {
-    pushLineMessage("月次レビューの生成に失敗しました。\n" + result.error);
+    return true;
   }
+  pushLineMessage("月次レビューの生成に失敗しました。\n" + result.error);
+  return false;
 }
 
 
 /**
- * Notionから指定期間のログメタデータを取得（本文省略版）
- * @param {Date} monthStart - 対象月の初日
- * @param {Date} monthEnd - 対象月の末日
+ * Notionから指定期間のログを本文付きで取得（月次レビュー・/monthly 用）
+ * @param {Date} monthStart - 開始（以上）
+ * @param {Date} monthEnd - 終了（未満）
+ * @throws {Error} Notionからの取得に失敗した場合
  */
 function fetchMonthlyLogsFromNotion(monthStart, monthEnd) {
-  const url = `https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`;
-
-  const basePayload = {
-    filter: {
-      and: [
-        { property: "Date", date: { on_or_after: monthStart.toISOString() } },
-        { property: "Date", date: { on_or_before: monthEnd.toISOString() } }
-      ]
-    },
-    sorts: [{ property: "Date", direction: "ascending" }]
-  };
-
-  // ページネーション対応
-  let allResults = [];
-  let hasMore = true;
-  let nextCursor = undefined;
-
-  while (hasMore) {
-    const payload = { ...basePayload };
-    if (nextCursor) payload.start_cursor = nextCursor;
-
-    const response = UrlFetchApp.fetch(url, {
-      method: 'post',
-      headers: {
-        'Authorization': `Bearer ${NOTION_TOKEN}`,
-        'Content-Type': 'application/json',
-        'Notion-Version': '2022-06-28'
-      },
-      payload: JSON.stringify(payload),
-      muteHttpExceptions: true
-    });
-
-    const code = response.getResponseCode();
-    if (code !== 200) {
-      console.error(`Notion月次データ取得エラー (${code}): ${response.getContentText().substring(0, 200)}`);
-      break;
-    }
-
-    const data = JSON.parse(response.getContentText());
-    allResults = allResults.concat(data.results || []);
-    hasMore = data.has_more === true;
-    nextCursor = data.next_cursor;
-  }
-
-  // 本文も取得（月次レビューの品質向上のため）
-  // Rate Limit 回避のため各取得の間に sleep(100ms) を入れる
-  var DAYS = ["日", "月", "火", "水", "木", "金", "土"];
-  return allResults.map(function(page) {
-    var props = page.properties;
-    var tags = (props["Tags"] && props["Tags"].multi_select || []).map(function(t) { return t.name; });
-    var body = "";
-    try {
-      body = fetchPageBodyText(page.id);
-      Utilities.sleep(100);
-    } catch (e) {
-      body = "";
-      console.warn("月次ログ本文取得失敗 (" + page.id + "): " + e.message);
-    }
-    var dateObj = new Date(page.properties["Date"] && page.properties["Date"].date && page.properties["Date"].date.start || page.created_time);
-    return {
-      date: dateObj.toLocaleDateString("ja-JP"),
-      dayOfWeek: DAYS[dateObj.getDay()] + "曜",
-      title: props["Name"] && props["Name"].title && props["Name"].title[0] && props["Name"].title[0].plain_text || "無題",
-      mood: props["Mood"] && props["Mood"].select && props["Mood"].select.name || "不明",
-      tags: tags,
-      body: body
-    };
-  });
+  // 件数が多いため、Rate Limit 回避に本文取得ごとに 100ms 待つ
+  return fetchLogsWithBody(monthStart, monthEnd, 100);
 }
 
 

@@ -8,50 +8,123 @@
 // ============================================================
 
 /**
- * 半年レビュー: 毎日実行、半年末（6/30, 12/31）のみ動作
- * GASトリガーにこの関数を「日ベース」で設定する
+ * 期末レビュー（月次 → 半年 → 年次）のエントリーポイント
+ * GASトリガーにこの関数を「日ベース」で1つだけ設定する。
+ * 毎日実行され、月末は月次、6/30・12/31 は続けて半年、12/31 はさらに年次を、この順番で実行する。
+ * 半年・年次は直前に保存した月次レビューを入力に使うため、別々のトリガーにすると順番が保証されない。
+ *
+ * - 同じ期間のレビューは一度完了したら再送しない（REVIEW_DONE_*）
+ * - 複数のトリガーが同時に動いても、実行中フラグ（REVIEW_RUN_STARTED_AT）で1つだけが処理する
+ * - 失敗したレビューは、同じ日に別のトリガーが動けば再試行される
  */
-function checkAndSendHalfYearReview() {
-  var now = new Date();
-  var month = now.getMonth() + 1;
-  var day = now.getDate();
-  var daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  var isHalfYearEnd = (month === 6 || month === 12) && day === daysInMonth;
-  if (isHalfYearEnd) {
-    sendHalfYearReview();
+function checkAndSendPeriodReviews() {
+  var steps = getDuePeriodReviewSteps(new Date());
+  if (steps.length === 0) return;
+
+  if (!acquireReviewRun()) {
+    console.log('期末レビューは別の実行が処理中のためスキップします');
+    return;
+  }
+  try {
+    // タイムアウト済みの待機写真を先に確定（後から過去日付で記録されて集計から漏れるのを防ぐ）
+    flushStalePendingImage();
+
+    steps.forEach(function (step) {
+      if (PROPS.getProperty(step.doneKey) === step.period) return;   // 完了済み
+      var done = false;
+      try {
+        done = step.run();
+      } catch (e) {
+        console.error(step.name + 'エラー:', e);
+        notifyOwner('⚠️ ' + step.name + 'の生成に失敗しました: ' + e.message);
+      }
+      if (done) PROPS.setProperty(step.doneKey, step.period);
+    });
+  } finally {
+    PROPS.deleteProperty('REVIEW_RUN_STARTED_AT');
   }
 }
 
 /**
- * 年次レビュー: 毎日実行、12/31 のみ動作
- * GASトリガーにこの関数を「日ベース」で設定する
+ * 今日実行すべき期末レビューを、実行順に返す
+ * @param {Date} now
+ * @returns {Array<{name: string, doneKey: string, period: string, run: function(): boolean}>}
  */
-function checkAndSendAnnualReview() {
-  var now = new Date();
-  var isYearEnd = now.getMonth() === 11 && now.getDate() === 31;
-  if (isYearEnd) {
-    sendAnnualReview();
+function getDuePeriodReviewSteps(now) {
+  var tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  if (tomorrow.getDate() !== 1) return [];   // 月末以外は何もしない
+
+  var year = now.getFullYear();
+  var month = now.getMonth() + 1;
+  var steps = [{
+    name: '月次レビュー',
+    doneKey: 'REVIEW_DONE_MONTHLY',
+    period: year + '-' + String(month).padStart(2, '0'),
+    run: sendMonthlyReview
+  }];
+  if (month === 6 || month === 12) {
+    steps.push({
+      name: '半年レビュー',
+      doneKey: 'REVIEW_DONE_HALFYEAR',
+      period: year + '-H' + (month === 6 ? 1 : 2),
+      run: sendHalfYearReview
+    });
   }
+  if (month === 12) {
+    steps.push({
+      name: '年次レビュー',
+      doneKey: 'REVIEW_DONE_ANNUAL',
+      period: String(year),
+      run: sendAnnualReview
+    });
+  }
+  return steps;
 }
+
+/**
+ * 期末レビューの実行権を取る（取れなければ別の実行が処理中）
+ * 実行が強制終了されてフラグが残った場合は、REVIEW_RUN_STALE_MS 経過後に取り直せる。
+ * @returns {boolean}
+ */
+function acquireReviewRun() {
+  return withScriptLock(function () {
+    var startedAt = parseInt(PROPS.getProperty('REVIEW_RUN_STARTED_AT') || '0', 10);
+    if (startedAt && Date.now() - startedAt < LIMITS.REVIEW_RUN_STALE_MS) return false;
+    PROPS.setProperty('REVIEW_RUN_STARTED_AT', String(Date.now()));
+    return true;
+  });
+}
+
+// 旧トリガー名（互換用）: 既存のトリガーをそのまま使えるよう、すべて同じ処理を呼ぶ。
+// 3つとも設定されていても、同じ期間のレビューが重複送信されることはない。
+function checkAndSendMonthlyReview() { checkAndSendPeriodReviews(); }
+function checkAndSendHalfYearReview() { checkAndSendPeriodReviews(); }
+function checkAndSendAnnualReview() { checkAndSendPeriodReviews(); }
 
 // ============================================================
 // 送信ロジック
 // ============================================================
 
+/**
+ * 半年レビューを生成・送信する（6/30・12/31 に、当月の月次レビューの後で呼ばれる）
+ * @returns {boolean} 完了したか
+ */
 function sendHalfYearReview() {
-  if (!LINE_USER_ID) return;
+  if (!LINE_USER_ID) return false;
   try {
     var now = new Date();
-    var half = now.getMonth() < 6 ? '上半期' : '下半期';
+    var isFirstHalf = now.getMonth() < 6;
+    var half = isFirstHalf ? '上半期' : '下半期';
     var yearHalf = now.getFullYear() + '年 ' + half;
 
-    // 直近6か月分の月次レビューを取得
+    // 対象半期（1〜6月 / 7〜12月）の月次レビューだけを使う
     var allMonthly = getMonthlyReviewHistory();
-    var recentMonthly = allMonthly.slice(-6);
+    var recentMonthly = filterMonthlyReviewsByRange(allMonthly, now.getFullYear(), isFirstHalf ? 1 : 7, isFirstHalf ? 6 : 12);
 
     if (recentMonthly.length === 0) {
       pushLineMessage('📊 ' + yearHalf + 'の月次レビューの蓄積がないため、半年レビューを生成できません。');
-      return;
+      return true;
     }
 
     var userProfile = PROPS.getProperty('USER_PROFILE') || 'ユーザーは目標達成に向けて努力している人物です。';
@@ -62,30 +135,45 @@ function sendHalfYearReview() {
     if (result.text) {
       var header = '🗓️ 【' + yearHalf + ' レビュー】\n\n';
       pushLineMessage(header + truncateForLine(result.text, 5000 - header.length));
-      saveHalfYearReview(result.text, yearHalf);
-      PROPS.setProperty('LAST_HALFYEAR_REVIEW', result.text.substring(0, LIMITS.PROPERTY_VALUE_MAX));
-    } else {
-      pushLineMessage('⚠️ 半年レビューの生成に失敗しました。\n' + result.error);
+      // 送信済みなので、保存に失敗しても完了扱いにする（再送を防ぐ）
+      try {
+        saveHalfYearReview(result.text, yearHalf);
+        PROPS.setProperty('LAST_HALFYEAR_REVIEW', result.text.substring(0, LIMITS.PROPERTY_VALUE_MAX));
+      } catch (saveErr) {
+        console.error('半年レビューの保存に失敗:', saveErr);
+      }
+      return true;
     }
+    pushLineMessage('⚠️ 半年レビューの生成に失敗しました。\n' + result.error);
+    return false;
   } catch (e) {
     console.error('半年レビューエラー:', e);
-    pushLineMessage('⚠️ 半年レビューの生成に失敗しました: ' + e.message);
+    notifyOwner('⚠️ 半年レビューの生成に失敗しました: ' + e.message);
+    return false;
   }
 }
 
+/**
+ * 年次レビューを生成・送信する（12/31 に、月次・半年レビューの後で呼ばれる）
+ * @returns {boolean} 完了したか
+ */
 function sendAnnualReview() {
-  if (!LINE_USER_ID) return;
+  if (!LINE_USER_ID) return false;
   try {
     var now = new Date();
-    var year = now.getFullYear() + '年';
+    var yearNumber = now.getFullYear();
+    var year = yearNumber + '年';
 
-    var allMonthly = getMonthlyReviewHistory();
-    var allHalfYear = getHalfYearReviewHistory();
+    // 対象年の月次・半年レビューだけを使う（前年の年次レビューが失敗して残っていても混ざらない）
+    var allMonthly = filterMonthlyReviewsByRange(getMonthlyReviewHistory(), yearNumber, 1, 12);
+    var allHalfYear = getHalfYearReviewHistory().filter(function (r) {
+      return (r.yearHalf || '').indexOf(year) === 0;
+    });
     var lastAnnual = getLastAnnualReview();
 
     if (allMonthly.length === 0) {
       pushLineMessage('📊 ' + year + 'の月次レビューの蓄積がないため、年次レビューを生成できません。');
-      return;
+      return true;
     }
 
     var userProfile = PROPS.getProperty('USER_PROFILE') || 'ユーザーは目標達成に向けて努力している人物です。';
@@ -95,15 +183,22 @@ function sendAnnualReview() {
     if (result.text) {
       var header = '🎊 【' + year + ' 年次レビュー】\n\n';
       pushLineMessage(header + truncateForLine(result.text, 5000 - header.length));
-      saveAnnualReview(result.text);
-      // 年次レビュー後に月次・半年の蓄積をクリアして翌年に備える
+      // 送信済みなので、保存に失敗しても完了扱いにする（再送を防ぐ）
+      try {
+        saveAnnualReview(result.text);
+      } catch (saveErr) {
+        console.error('年次レビューの保存に失敗:', saveErr);
+      }
+      // 年次レビュー後に月次の蓄積をクリアして翌年に備える（半年は最大2件で自動的に入れ替わる）
       clearMonthlyReviewHistory();
-    } else {
-      pushLineMessage('⚠️ 年次レビューの生成に失敗しました。\n' + result.error);
+      return true;
     }
+    pushLineMessage('⚠️ 年次レビューの生成に失敗しました。\n' + result.error);
+    return false;
   } catch (e) {
     console.error('年次レビューエラー:', e);
-    pushLineMessage('⚠️ 年次レビューの生成に失敗しました: ' + e.message);
+    notifyOwner('⚠️ 年次レビューの生成に失敗しました: ' + e.message);
+    return false;
   }
 }
 

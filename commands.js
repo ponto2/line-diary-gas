@@ -379,12 +379,12 @@ function handleCancelCommand(replyToken) {
  */
 function handleSaveImageCommand(replyToken) {
   try {
-    const pending = getPendingImage();
+    const pending = takePendingImage();
     if (!pending) {
       replyLineMessage(replyToken, "📷 待機中の写真はありません。先に写真を送ってください。", buildCommandQuickReply());
       return;
     }
-    finalizePendingImage(pending);
+    finalizeTakenPendingImage(pending);
     replyFlexMessage(replyToken, "📷 写真日記を記録しました", buildDiaryRecordFlex({
       title: "📷 写真日記",
       mood: "😐",

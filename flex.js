@@ -283,12 +283,17 @@ function buildStreakFlex(streak, startDateKey) {
 
 /**
  * /stats 統計カードのFlex Message（週次）
+ * @param {Array} logs
+ * @param {Date} [from] - 集計開始（省略時は6日前）
+ * @param {Date} [to] - 集計終了（省略時は現在）
  */
-function buildStatsFlex(logs) {
+function buildStatsFlex(logs, from, to) {
   const dayNames = ['日', '月', '火', '水', '木', '金', '土'];
-  const now = new Date();
-  const from = new Date();
-  from.setDate(from.getDate() - 6);
+  const now = to || new Date();
+  if (!from) {
+    from = new Date();
+    from.setDate(from.getDate() - 6);
+  }
   const dateRange = (from.getMonth() + 1) + "/" + from.getDate() + "(" + dayNames[from.getDay()] + ") ~ " + (now.getMonth() + 1) + "/" + now.getDate() + "(" + dayNames[now.getDay()] + ")";
 
   return buildStatsFlexCore(logs, {
@@ -300,13 +305,14 @@ function buildStatsFlex(logs) {
 /**
  * 月間統計のFlex Message（深紫テーマで週次と視覚的に区別）
  * @param {Array} logs - 月間ログ
- * @param {Date} monthStart - 対象月の初日
- * @param {Date} monthEnd - 対象月の末日
+ * @param {Date} monthStart - 集計開始（前月末の夜から始まる場合がある）
+ * @param {Date} monthEnd - 集計終了
  */
 function buildMonthlyStatsFlex(logs, monthStart, monthEnd) {
   const dayNames = ['日', '月', '火', '水', '木', '金', '土'];
   const dateRange = (monthStart.getMonth() + 1) + "/" + monthStart.getDate() + "(" + dayNames[monthStart.getDay()] + ") ~ " + (monthEnd.getMonth() + 1) + "/" + monthEnd.getDate() + "(" + dayNames[monthEnd.getDay()] + ")";
-  const daysInMonth = monthEnd.getDate();
+  // 記録率の分母: 集計期間にかかる日数（開始日〜終了日の両端を含む）
+  const daysInMonth = Math.round((startOfDay(monthEnd) - startOfDay(monthStart)) / 86400000) + 1;
 
   return buildStatsFlexCore(logs, {
     headerText: "📊 " + dateRange + " の月間統計",

@@ -2,14 +2,24 @@
 // Notion API
 // ============================================================
 
-function saveToNotion(data, bodyText, imageUrl) {
+/**
+ * 日記をNotionに保存する
+ * @param {AnalysisResult} data - タイトル・ムード・タグ
+ * @param {string} bodyText - 本文（長文は NOTION_BODY_MAX 文字ごとの段落に分割して全文保存）
+ * @param {string|string[]} [imageUrls] - 写真のDrive URL（1件または複数）
+ * @param {Date} [recordedAt] - 日記の日時（省略時は現在）
+ */
+function saveToNotion(data, bodyText, imageUrls, recordedAt) {
   const url = 'https://api.notion.com/v1/pages';
-  const safeBody = (bodyText || "").substring(0, LIMITS.NOTION_BODY_MAX);
+  const urls = (Array.isArray(imageUrls) ? imageUrls : [imageUrls]).filter(Boolean);
 
   // ブロック作成: 画像リンクがある場合は本文より先頭に配置
   const childrenBlocks = [];
 
-  if (imageUrl) {
+  urls.forEach((imageUrl, i) => {
+    const label = urls.length > 1
+      ? `写真を開く ${i + 1}/${urls.length} (Google Drive)`
+      : "写真を開く (Google Drive)";
     childrenBlocks.push({
       object: 'block',
       type: 'paragraph',
@@ -19,19 +29,23 @@ function saveToNotion(data, bodyText, imageUrl) {
           {
             type: 'text',
             text: {
-              content: "写真を開く (Google Drive)",
+              content: label,
               link: { url: imageUrl }
             }
           }
         ]
       }
     });
-  }
+  });
 
-  childrenBlocks.push({
-    object: 'block',
-    type: 'paragraph',
-    paragraph: { rich_text: [{ type: 'text', text: { content: safeBody } }] }
+  // Notionの rich_text は1要素2000文字までなので、段落を分けて全文を保存する
+  // （読み出し側は段落を区切りなしで連結するため、元の本文に戻る）
+  splitTextForNotion(bodyText || "", LIMITS.NOTION_BODY_MAX).forEach(chunk => {
+    childrenBlocks.push({
+      object: 'block',
+      type: 'paragraph',
+      paragraph: { rich_text: [{ type: 'text', text: { content: chunk } }] }
+    });
   });
 
   const payload = {
@@ -40,7 +54,7 @@ function saveToNotion(data, bodyText, imageUrl) {
       "Name": { title: [{ text: { content: data.title || "無題" } }] },
       "Mood": { select: { name: data.mood || "😐" } },
       "Tags": { multi_select: (data.tags || []).map(tag => ({ name: tag })) },
-      "Date": { date: { start: new Date().toISOString() } }
+      "Date": { date: { start: (recordedAt || new Date()).toISOString() } }
     },
     children: childrenBlocks
   };
@@ -62,60 +76,80 @@ function saveToNotion(data, bodyText, imageUrl) {
 }
 
 /**
- * 過去7日間のログを取得（週次レビュー用、本文付き・ページネーション対応）
+ * テキストを maxLen 文字以下の断片に分割する（サロゲートペアの途中では切らない）
+ * @param {string} text
+ * @param {number} maxLen
+ * @returns {string[]} 空文字列の場合は [""]
  */
-function fetchWeeklyLogsFromNotion() {
-  const url = `https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`;
-  const date = new Date();
-  date.setHours(0, 0, 0, 0);
-  date.setDate(date.getDate() - 6);
-  const isoDate = date.toISOString();
+function splitTextForNotion(text, maxLen) {
+  const chunks = [];
+  let i = 0;
+  while (i < text.length) {
+    let end = Math.min(i + maxLen, text.length);
+    if (end < text.length) {
+      const code = text.charCodeAt(end - 1);
+      if (code >= 0xD800 && code <= 0xDBFF) end--;   // 絵文字などの上位サロゲートで終わる場合は1つ手前で切る
+    }
+    chunks.push(text.substring(i, end));
+    i = end;
+  }
+  return chunks.length > 0 ? chunks : [""];
+}
 
+/**
+ * 直近7日間（6日前の0時〜現在）のログを取得（/stats・/review 用、本文付き）
+ * 期間を指定すると、その期間のログを取得する（週次レビュー用）。
+ * @param {Date} [start] - 開始（以上）
+ * @param {Date} [end] - 終了（未満）
+ * @returns {Array<DiaryLog>}
+ * @throws {Error} Notionからの取得に失敗した場合
+ */
+function fetchWeeklyLogsFromNotion(start, end) {
+  if (!start) {
+    start = startOfDay(new Date());
+    start.setDate(start.getDate() - 6);
+  }
+  return fetchLogsWithBody(start, end || new Date(), 0);
+}
+
+/**
+ * 指定期間のログを本文付きで取得（レビュー用、ページネーション対応）
+ * 取得エラー時は例外を投げる（空配列を返すと「記録なし」と区別できないため）
+ * @param {Date} start - 開始（以上）
+ * @param {Date} end - 終了（未満）
+ * @param {number} [throttleMs=0] - 本文取得ごとの待機時間（大量取得時のRate Limit対策）
+ * @returns {Array<DiaryLog>}
+ * @throws {Error} Notionからの取得に失敗した場合
+ */
+function fetchLogsWithBody(start, end, throttleMs) {
   const basePayload = {
     filter: {
-      property: "Date",
-      date: { on_or_after: isoDate }
+      and: [
+        { property: "Date", date: { on_or_after: start.toISOString() } },
+        { property: "Date", date: { before: end.toISOString() } }
+      ]
     },
-    sorts: [{ property: "Date", direction: "ascending" }]
+    sorts: [{ property: "Date", direction: "ascending" }],
+    page_size: 100
   };
 
   let allResults = [];
-  let hasMore = true;
-  let nextCursor = undefined;
-
-  while (hasMore) {
-    const payload = { ...basePayload };
+  let nextCursor = null;
+  do {
+    const payload = Object.assign({}, basePayload);
     if (nextCursor) payload.start_cursor = nextCursor;
-
-    const response = UrlFetchApp.fetch(url, {
-      method: 'post',
-      headers: {
-        'Authorization': `Bearer ${NOTION_TOKEN}`,
-        'Content-Type': 'application/json',
-        'Notion-Version': '2022-06-28'
-      },
-      payload: JSON.stringify(payload),
-      muteHttpExceptions: true
-    });
-
-    const code = response.getResponseCode();
-    if (code !== 200) {
-      console.error(`Notionデータ取得エラー (${code}): ${response.getContentText().substring(0, 200)}`);
-      break;
-    }
-
-    const data = JSON.parse(response.getContentText());
+    const data = fetchNotionAPI(`/v1/databases/${NOTION_DB_ID}/query`, { payload: payload });
     allResults = allResults.concat(data.results || []);
-    hasMore = data.has_more === true;
-    nextCursor = data.next_cursor;
-  }
+    nextCursor = data.has_more ? data.next_cursor : null;
+  } while (nextCursor);
 
   const DAYS = ["日", "月", "火", "水", "木", "金", "土"];
   return allResults.map(page => {
     const props = page.properties;
     const tags = (props["Tags"]?.multi_select || []).map(t => t.name);
     const body = fetchPageBodyText(page.id);
-    const dateObj = new Date(page.properties["Date"]?.date?.start || page.created_time);
+    if (throttleMs) Utilities.sleep(throttleMs);
+    const dateObj = new Date(props["Date"]?.date?.start || page.created_time);
     return {
       date: dateObj.toLocaleDateString("ja-JP"),
       dayOfWeek: DAYS[dateObj.getDay()] + "曜",
@@ -294,22 +328,9 @@ function normalizeSearchText(text) {
  * @returns {{body: string, imageUrl: string|null}}
  */
 function fetchPageBodyAndImageUrl(pageId) {
-  const url = `https://api.notion.com/v1/blocks/${pageId}/children`;
-
   try {
-    const response = UrlFetchApp.fetch(url, {
-      method: 'get',
-      headers: {
-        'Authorization': `Bearer ${NOTION_TOKEN}`,
-        'Content-Type': 'application/json',
-        'Notion-Version': '2022-06-28'
-      },
-      muteHttpExceptions: true
-    });
-
-    if (response.getResponseCode() !== 200) return { body: "(取得失敗)", imageUrl: null };
-
-    const blocks = JSON.parse(response.getContentText()).results || [];
+    // fetchNotionAPI は Rate Limit (429) を自動リトライする
+    const blocks = fetchNotionAPI(`/v1/blocks/${pageId}/children?page_size=100`, { method: 'get' }).results || [];
     let text = "";
     let imageUrl = null;
 
@@ -327,8 +348,8 @@ function fetchPageBodyAndImageUrl(pageId) {
       }
 
       if (driveUrl) {
-        // Driveリンクブロックはbodyに含めず、URLだけ抽出
-        imageUrl = driveUrl;
+        // Driveリンクブロックはbodyに含めず、URLだけ抽出（複数枚の場合は1枚目）
+        if (!imageUrl) imageUrl = driveUrl;
       } else {
         // 通常ブロック → plain_textを連結
         for (const rt of richTexts) {
@@ -348,22 +369,9 @@ function fetchPageBodyAndImageUrl(pageId) {
  * Notionページの本文テキストを取得
  */
 function fetchPageBodyText(pageId) {
-  const url = `https://api.notion.com/v1/blocks/${pageId}/children`;
-
   try {
-    const response = UrlFetchApp.fetch(url, {
-      method: 'get',
-      headers: {
-        'Authorization': `Bearer ${NOTION_TOKEN}`,
-        'Content-Type': 'application/json',
-        'Notion-Version': '2022-06-28'
-      },
-      muteHttpExceptions: true
-    });
-
-    if (response.getResponseCode() !== 200) return "(取得失敗)";
-
-    const blocks = JSON.parse(response.getContentText()).results || [];
+    // fetchNotionAPI は Rate Limit (429) を自動リトライする
+    const blocks = fetchNotionAPI(`/v1/blocks/${pageId}/children?page_size=100`, { method: 'get' }).results || [];
     let text = "";
     for (const block of blocks) {
       const richTexts = block[block.type]?.rich_text || [];

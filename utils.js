@@ -10,47 +10,96 @@ function formatDateKey(d) {
 }
 
 /**
- * 日記記録時にstreakキャッシュを更新する
- * PropertiesServiceのみ使用（Notion APIコール0回）
+ * 指定した日の 00:00 を返す
+ * @param {Date} d
+ * @returns {Date}
  */
-function updateStreakCache() {
+function startOfDay(d) {
+  const result = new Date(d);
+  result.setHours(0, 0, 0, 0);
+  return result;
+}
+
+/**
+ * スクリプトロックを取得して fn を実行する（PropertiesService の読み書きを不可分にするため）
+ * ロックは同じ実行内で入れ子にしないこと。中の処理は短く保つ。
+ * @param {function(): *} fn
+ * @param {number} [timeoutMs=10000] - ロック待ちの上限。超えると例外
+ * @returns {*} fn の戻り値
+ */
+function withScriptLock(fn, timeoutMs) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(timeoutMs || 10000);
+  try {
+    return fn();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * 日記記録時にstreakキャッシュを更新する
+ * 通常はPropertiesServiceのみ使用（Notion APIコール0回）。
+ * キャッシュが無い場合や、最終記録日より前の日付の記録（待機写真の遅延確定など）は
+ * 差分では正しく更新できないため、Notionから再計算する。
+ * @param {Date} [recordedAt] - 記録した日記の日時（省略時は現在）
+ */
+function updateStreakCache(recordedAt) {
   // 並行実行によるカウント不整合を防止
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(5000)) return;
 
+  let needsRebuild = false;
   try {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const todayKey = formatDateKey(today);
-
-    const streakCount = parseInt(PROPS.getProperty('STREAK_COUNT') || '0', 10);
-    const lastDate = PROPS.getProperty('STREAK_LAST_DATE') || '';
-    const totalDays = parseInt(PROPS.getProperty('STREAK_TOTAL_DAYS') || '0', 10);
-
-    if (lastDate === todayKey) {
-      // 同日2回目以降の記録 → 何もしない
-      return;
-    }
-
-    // 昨日の日付を計算
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-    const yesterdayKey = formatDateKey(yesterday);
-
-    if (lastDate === yesterdayKey) {
-      // 昨日も記録あり → streak継続
-      PROPS.setProperty('STREAK_COUNT', String(streakCount + 1));
-    } else {
-      // 途切れた or 初回 → streakリセット、開始日を今日に
-      PROPS.setProperty('STREAK_COUNT', '1');
-      PROPS.setProperty('STREAK_START_DATE', todayKey);
-    }
-
-    PROPS.setProperty('STREAK_LAST_DATE', todayKey);
-    PROPS.setProperty('STREAK_TOTAL_DAYS', String(totalDays + 1));
+    needsRebuild = applyStreakRecord(recordedAt || new Date());
   } finally {
     lock.releaseLock();
   }
+  if (needsRebuild) initStreakCache();
+}
+
+/**
+ * streakキャッシュに1件の記録を反映する（ロック取得済みの前提）
+ * @param {Date} recordedAt
+ * @returns {boolean} Notionからの再計算が必要か
+ */
+function applyStreakRecord(recordedAt) {
+  const dayKey = formatDateKey(startOfDay(recordedAt));
+
+  const streakCount = parseInt(PROPS.getProperty('STREAK_COUNT') || '0', 10);
+  const lastDate = PROPS.getProperty('STREAK_LAST_DATE');
+  const totalDays = parseInt(PROPS.getProperty('STREAK_TOTAL_DAYS') || '0', 10);
+
+  if (lastDate === null || PROPS.getProperty('STREAK_COUNT') === null) {
+    // キャッシュ未初期化
+    return true;
+  }
+  if (lastDate === dayKey) {
+    // 同日2回目以降の記録 → 何もしない
+    return false;
+  }
+  if (dayKey < lastDate) {
+    // 最終記録日より前の日付 → 差分更新できないので再計算
+    return true;
+  }
+
+  // 記録日の前日を計算
+  const previousDay = startOfDay(recordedAt);
+  previousDay.setDate(previousDay.getDate() - 1);
+  const previousDayKey = formatDateKey(previousDay);
+
+  if (lastDate === previousDayKey) {
+    // 前日も記録あり → streak継続
+    PROPS.setProperty('STREAK_COUNT', String(streakCount + 1));
+  } else {
+    // 途切れた → streakリセット、開始日を記録日に
+    PROPS.setProperty('STREAK_COUNT', '1');
+    PROPS.setProperty('STREAK_START_DATE', dayKey);
+  }
+
+  PROPS.setProperty('STREAK_LAST_DATE', dayKey);
+  PROPS.setProperty('STREAK_TOTAL_DAYS', String(totalDays + 1));
+  return false;
 }
 
 /**
@@ -58,7 +107,6 @@ function updateStreakCache() {
  * ページネーション対応、ウィンドウを遡って連続が途切れるまで計算
  */
 function initStreakCache() {
-  const url = `https://api.notion.com/v1/databases/${NOTION_DB_ID}/query`;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const todayKey = formatDateKey(today);
@@ -79,31 +127,18 @@ function initStreakCache() {
     while (hasMore) {
       const payload = {
         filter: {
-          property: "Date",
-          date: {
-            on_or_after: windowStart.toISOString(),
-            before: windowEnd.toISOString()
-          }
+          and: [
+            { property: "Date", date: { on_or_after: windowStart.toISOString() } },
+            { property: "Date", date: { before: windowEnd.toISOString() } }
+          ]
         },
         sorts: [{ property: "Date", direction: "descending" }],
         page_size: 100
       };
       if (nextCursor) payload.start_cursor = nextCursor;
 
-      const response = UrlFetchApp.fetch(url, {
-        method: 'post',
-        headers: {
-          'Authorization': `Bearer ${NOTION_TOKEN}`,
-          'Content-Type': 'application/json',
-          'Notion-Version': '2022-06-28'
-        },
-        payload: JSON.stringify(payload),
-        muteHttpExceptions: true
-      });
-
-      if (response.getResponseCode() !== 200) break;
-
-      const data = JSON.parse(response.getContentText());
+      // 取得エラーは例外にする（記録なしとして誤ったstreakをキャッシュしないため）
+      const data = fetchNotionAPI(`/v1/databases/${NOTION_DB_ID}/query`, { payload: payload });
       (data.results || []).forEach(page => {
         recordedDates.add(formatDateKey(new Date(page.properties["Date"]?.date?.start || page.created_time)));
       });
@@ -267,7 +302,8 @@ function generateTextWithFallback(prompt, systemPrompt, userMessage, useClaude, 
  * @returns {string[]} 未設定のプロパティ名の配列
  */
 function validateRequiredProps() {
-  const required = ['LINE_TOKEN', 'NOTION_TOKEN', 'NOTION_DB_ID', 'GEMINI_API_KEY', 'DRIVE_FOLDER_ID'];
+  // LINE_USER_ID は本人以外のメッセージを弾くために必須
+  const required = ['LINE_TOKEN', 'LINE_USER_ID', 'NOTION_TOKEN', 'NOTION_DB_ID', 'GEMINI_API_KEY', 'DRIVE_FOLDER_ID'];
   return required.filter(key => !PROPS.getProperty(key));
 }
 
@@ -393,6 +429,50 @@ function filterReviewsByMonth(reviews, monthStart, monthEnd) {
     const d = new Date(review.date);
     return !isNaN(d.getTime()) && d >= monthStart && d <= monthEnd;
   });
+}
+
+/**
+ * 定期レビューの集計開始時刻を返す。
+ * 前回の定期レビューの集計終了時刻（key に保存）から続けて集計することで、
+ * トリガー実行後に書いた日記が次の期間からも漏れないようにする。
+ * 未保存、または maxDays より古い場合は fallbackStart を使う。
+ * @param {string} key - 前回の集計終了時刻を保存したプロパティ名
+ * @param {Date} fallbackStart
+ * @param {number} maxDays
+ * @param {Date} now - 今回の集計終了時刻
+ * @returns {Date}
+ */
+function getReviewWindowStart(key, fallbackStart, maxDays, now) {
+  const raw = PROPS.getProperty(key);
+  if (!raw) return fallbackStart;
+  const last = new Date(raw);
+  if (isNaN(last.getTime()) || last >= now || now - last > maxDays * 86400000) return fallbackStart;
+  return last;
+}
+
+/**
+ * 月次レビュー履歴から、指定した年・月の範囲に該当するものを返す
+ * @param {Array<{date: string, yearMonth: string, text: string}>} reviews
+ * @param {number} year
+ * @param {number} fromMonth - 1〜12
+ * @param {number} toMonth - 1〜12
+ */
+function filterMonthlyReviewsByRange(reviews, year, fromMonth, toMonth) {
+  return reviews.filter(function (review) {
+    var ym = parseReviewYearMonth(review);
+    return ym !== null && ym.year === year && ym.month >= fromMonth && ym.month <= toMonth;
+  });
+}
+
+/**
+ * 月次レビューの対象年月を取得（yearMonth "2026年6月" を優先、なければ保存日）
+ * @returns {{year: number, month: number}|null}
+ */
+function parseReviewYearMonth(review) {
+  var m = /^(\d{4})年(\d{1,2})月$/.exec(review.yearMonth || '');
+  if (m) return { year: Number(m[1]), month: Number(m[2]) };
+  var d = new Date(review.date);
+  return isNaN(d.getTime()) ? null : { year: d.getFullYear(), month: d.getMonth() + 1 };
 }
 
 // ============================================================

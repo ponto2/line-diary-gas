@@ -12,6 +12,17 @@ function pushLineMessage(text) {
 }
 
 /**
+ * 本人へのお知らせをプッシュ送信（失敗しても例外を投げない）
+ */
+function notifyOwner(text) {
+  try {
+    pushLineMessage(text);
+  } catch (e) {
+    console.error("Push通知失敗:", e);
+  }
+}
+
+/**
  * LINEプッシュ送信（複数メッセージ対応）
  */
 function pushMessages(messages) {

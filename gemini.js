@@ -49,9 +49,33 @@ function callGeminiAPI(text, imageBlob, modelName) {
   if (code !== 200) throw new Error(`API Error (${code}): ${body.substring(0, 200)}`);
 
   // Geminiレスポンスからテキストを取得しパース
-  const rawText = JSON.parse(body)?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!rawText) throw new Error("Empty response from Gemini");
+  const rawText = extractGeminiText(JSON.parse(body));
   return JSON.parse(rawText);
+}
+
+/**
+ * Geminiのレスポンスから本文テキストを取り出す（全partを連結、思考partは除外）
+ * 本文が空の場合（セーフティブロック等）は理由付きで例外を投げる。
+ * 空応答を成功扱いすると、次のモデルへのフォールバックが働かないため。
+ * @param {Object} json - generateContent のレスポンス
+ * @returns {string}
+ * @throws {Error} 本文が空の場合
+ */
+function extractGeminiText(json) {
+  const candidate = json?.candidates?.[0];
+  const text = (candidate?.content?.parts || [])
+    .filter(part => !part.thought && typeof part.text === 'string')
+    .map(part => part.text)
+    .join('');
+
+  if (!text.trim()) {
+    const reason = candidate?.finishReason || json?.promptFeedback?.blockReason || 'unknown';
+    throw new Error(`Empty response from Gemini (reason: ${reason})`);
+  }
+  if (candidate.finishReason && candidate.finishReason !== 'STOP') {
+    console.warn(`Gemini finishReason: ${candidate.finishReason}`);
+  }
+  return text;
 }
 
 /**
@@ -73,6 +97,5 @@ function callGeminiForText(prompt, modelName) {
   const body = response.getContentText();
   if (code !== 200) throw new Error(`API Error (${code}): ${body.substring(0, 200)}`);
 
-  const json = JSON.parse(body);
-  return json.candidates?.[0]?.content?.parts?.[0]?.text || "No content";
+  return extractGeminiText(JSON.parse(body));
 }

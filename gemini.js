@@ -37,12 +37,23 @@ function callGeminiAPI(text, imageBlob, modelName) {
     });
   }
 
-  const response = UrlFetchApp.fetch(url, {
+  // タイトル・気分・タグの分類だけなので思考レベルは low で十分（既定の medium は応答が遅い）
+  const fetchWithConfig = generationConfig => UrlFetchApp.fetch(url, {
     method: 'post',
     contentType: 'application/json',
-    payload: JSON.stringify({ contents: [{ parts: parts }], generationConfig: { response_mime_type: "application/json" } }),
+    payload: JSON.stringify({ contents: [{ parts: parts }], generationConfig: generationConfig }),
     muteHttpExceptions: true
   });
+
+  let response = fetchWithConfig({
+    response_mime_type: "application/json",
+    thinkingConfig: { thinkingLevel: "low" }
+  });
+  if (response.getResponseCode() === 400) {
+    // thinkingLevel 非対応のモデルの場合は指定なしで再試行
+    console.warn(`[${modelName}] thinkingLevel 指定で400。指定なしで再試行: ${response.getContentText().substring(0, 200)}`);
+    response = fetchWithConfig({ response_mime_type: "application/json" });
+  }
 
   const code = response.getResponseCode();
   const body = response.getContentText();

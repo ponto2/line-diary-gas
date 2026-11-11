@@ -4,7 +4,7 @@
 
 function analyzeWithGemini(text, imageBlob) {
   let errorLog = "";
-  for (const model of MODEL_CANDIDATES) {
+  for (const model of DIARY_MODEL_CANDIDATES) {
     try {
       return { success: true, data: callGeminiAPI(text, imageBlob, model) };
     } catch (e) {

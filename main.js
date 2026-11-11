@@ -62,15 +62,20 @@ const MOODS = ["🤩", "😊", "😐", "😰", "😡"];
 /** AI APIモデル設定（モデル更新時はここを変更） */
 const AI_MODELS = {
   gemini: {
-    candidates: ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"]
+    /** レビュー生成用（品質優先・思考レベルは既定） */
+    candidates: ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"],
+    /** 日記解析用（タイトル・気分・タグの分類のみ。速度優先・思考レベル low） */
+    diaryAnalysisCandidates: ["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.8-flash"]
   },
   claude: {
     defaultText: "claude-sonnet-5-5",
     longTermReview: "claude-opus-5-5"
   }
 };
-/** Gemini APIモデル候補（優先順） */
+/** Gemini APIモデル候補（優先順）: レビュー生成用 */
 const MODEL_CANDIDATES = AI_MODELS.gemini.candidates;
+/** Gemini APIモデル候補（優先順）: 日記解析用 */
+const DIARY_MODEL_CANDIDATES = AI_MODELS.gemini.diaryAnalysisCandidates;
 
 /** システム共通の制限値 */
 const LIMITS = {
